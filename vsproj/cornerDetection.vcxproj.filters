@@ -1,0 +1,49 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="detector">
+      <UniqueIdentifier>{ecac5119-3e05-4e4f-86e7-87eb539b8c0e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="alg">
+      <UniqueIdentifier>{1fdcbe4b-b9e3-4809-8813-83a392ac15ee}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="def">
+      <UniqueIdentifier>{18ef0cf3-def2-4480-bc31-b2dab61f59e4}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\main.cpp" />
+    <ClCompile Include="..\src\detector\detector.cpp">
+      <Filter>detector</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\alg\math_helper.cpp">
+      <Filter>alg</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\src\detector\detector.h">
+      <Filter>detector</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\alg\math_helper.h">
+      <Filter>alg</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\def\type_def.h">
+      <Filter>def</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\detector\optimizator.h">
+      <Filter>detector</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\detector\processor.h">
+      <Filter>detector</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\detector\rectifier.h">
+      <Filter>detector</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\alg\timer.h">
+      <Filter>alg</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\def\macro_def.h">
+      <Filter>def</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>
