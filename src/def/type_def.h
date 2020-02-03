@@ -3,6 +3,7 @@
 #include <vector>
 #include <Eigen/Core>
 
+
 using PixelType = float;
 const PixelType PI = CV_PI;
 const int MatType = CV_32FC1;
@@ -42,9 +43,6 @@ using Corners = std::vector<Corner>;
 
 struct ScoreCorner
 {
-	//ScoreCorner(const Corner& corner, const PixelType& score)
-	//	: corner(corner), score(score)
-	//{}
 	Corner corner; 
 	PixelType score;
 };

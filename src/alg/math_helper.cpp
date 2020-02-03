@@ -1,6 +1,4 @@
 #include "math_helper.h"
-#include <opencv2/cudaarithm.hpp>
-#include <opencv2/cudafilters.hpp>
 using namespace cv;
 
 Mat conv2(const Mat &img, const Mat &kernel, const String &mode)
@@ -37,6 +35,10 @@ PixelType normpdf(PixelType dist, PixelType mu, PixelType sigma)
 	return s / (sqrt(2 * PI) * sigma);
 }
 
+
+#ifdef USE_CUDA
+#include <opencv2/cudaarithm.hpp>
+#include <opencv2/cudafilters.hpp>
 cv::Mat cudaFilter(const cv::Mat &img, const cv::Mat &kernel)
 {
 	Mat flip_kernel; flip(kernel, flip_kernel, -1);
@@ -48,3 +50,4 @@ cv::Mat cudaFilter(const cv::Mat &img, const cv::Mat &kernel)
 	cv::Mat res; g_res.download(res);
 	return res;
 }
+#endif

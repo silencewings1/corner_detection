@@ -1,2 +1,673 @@
-#include "detector.h"
+﻿#include "detector.h"
+#include <Eigen/Dense>
+#include <opencv2/core/eigen.hpp>
+#include <iostream>
+#include <iomanip>
+#include <array>
+#include "../alg/math_helper.h"
+#include "../alg/timer.h"
 
+#ifdef USE_CUDA
+#include <opencv2/cudaarithm.hpp>
+#include <opencv2/cudafilters.hpp>
+#endif
+
+Detector::Detector(const cv::Size &size)
+	: sigma(2), half_patch_size(3), patch_X(calcPatchX())
+{
+#ifdef USE_CUDA
+	initCuda(size);
+#endif
+}
+
+ScoreCorners Detector::findCorners(const cv::Mat &image)
+{
+	auto t0 = tic();
+	auto gray_image = convertToGray(image);
+	toc(t0, "t0:");
+
+	auto t1 = tic();
+#ifdef USE_CUDA
+	auto [Ix, Iy, cmax] = secondDerivCornerMetricCuda(gray_image);
+#else
+	auto [Ix, Iy, cmax] = secondDerivCornerMetric(gray_image);
+#endif
+	toc(t1, "t1:");
+
+	auto t2 = tic();
+	cv::Mat I_angle;
+	cv::phase(Ix, Iy, I_angle);
+	cv::Mat I_weight;
+	cv::magnitude(Ix, Iy, I_weight);
+	toc(t2, "t2:");
+
+	auto t3 = tic();
+	auto corners = nonMaximumSuppression(cmax);
+	toc(t3, "t3:");
+
+	std::sort(corners.begin(), corners.end(),
+			  [](const auto &lhs, const auto &rhs) { return lhs.val > rhs.val; });
+
+	auto t4 = tic();
+	auto [refined_corners, angles] = refineCorners(corners, I_angle, I_weight);
+	toc(t4, "t4:");
+
+	auto t5 = tic();
+	auto corners_with_angle = subPixelLocation(cmax, refined_corners, angles);
+	toc(t5, "t5:");
+
+	auto t6 = tic();
+	auto scored_corners = scoreCorners(gray_image, I_angle, I_weight, corners_with_angle);
+	eraseLowScoreCorners(scored_corners, 0.01);
+	toc(t6, "t6:");
+
+	return scored_corners;
+}
+
+void Detector::showResult(const ScoreCorners &corners, const cv::Mat &image)
+{
+	for (const auto &sc : corners)
+	{
+		cv::circle(image, sc.corner.point, 3, cv::Scalar(0, 0, 255), -1);
+		cv::putText(image, std::to_string(sc.score), sc.corner.point, cv::FONT_HERSHEY_COMPLEX, 0.4, cv::Scalar(0, 255, 255));
+	}
+	cv::imshow("scored_corners", image);
+	std::cout << "scored_corners size: " << corners.size() << std::endl;
+}
+
+void Detector::dump(const cv::String &name, const cv::Mat &mat)
+{
+	auto width = mat.cols;
+	auto height = mat.rows;
+
+	std::cout.setf(std::ios::fixed);
+	std::cout << name << std::endl;
+	for (int i = 0; i < std::min(width, 10); ++i)
+	{
+		for (int j = 0; j < std::min(height, 6); ++j)
+		{
+			std::cout << mat.ptr<PixelType>(i)[j] << std::setprecision(6) << '\t';
+		}
+		std::cout << std::endl;
+	}
+}
+
+cv::Mat Detector::convertToGray(const cv::Mat &image)
+{
+	cv::Mat gray;
+	cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+	gray.convertTo(gray, MatType);
+	gray = gray / 255;
+
+	return gray;
+}
+
+std::tuple<cv::Mat, cv::Mat, cv::Mat> Detector::secondDerivCornerMetric(const cv::Mat &gray_image)
+{
+	cv::Mat gaussian_image;
+	cv::GaussianBlur(gray_image, gaussian_image, cv::Size(7 * sigma + 1, 7 * sigma + 1), sigma);
+
+	cv::Mat dx = (cv::Mat_<PixelType>(1, 3) << -1, 0, 1);
+	cv::Mat dy;
+	cv::transpose(dx, dy);
+
+	// first derivative
+	auto Ix = conv2(gaussian_image, dx, "same");
+	auto Iy = conv2(gaussian_image, dy, "same");
+	auto I_45 = Ix * cos(PI / 4) + Iy * sin(PI / 4);
+	auto I_n45 = Ix * cos(-PI / 4) + Iy * sin(-PI / 4);
+
+	// second derivative
+	auto Ixy = conv2(Ix, dy, "same");
+	auto I_45_x = conv2(I_45, dx, "same");
+	auto I_45_y = conv2(I_45, dy, "same");
+	auto I_45_45 = I_45_x * cos(-PI / 4) + I_45_y * sin(-PI / 4);
+
+	auto cxy = static_cast<cv::Mat>(pow(sigma, 2) * cv::abs(Ixy) - 1.5 * sigma * (cv::abs(I_45) + cv::abs(I_n45)));
+	auto c45 = static_cast<cv::Mat>(pow(sigma, 2) * cv::abs(I_45_45) - 1.5 * sigma * (cv::abs(Ix) + cv::abs(Iy)));
+	auto cmax = static_cast<cv::Mat>(cv::max(cxy, c45));
+	cv::Mat zeros_mat = cv::Mat::zeros(cmax.size(), MatType);
+	cmax = cv::max(cmax, zeros_mat);
+
+	return {Ix, Iy, cmax};
+}
+
+Maximas Detector::nonMaximumSuppression(const cv::Mat &img, int n /*= 8*/, PixelType tau /*= 0.06f*/, int margin /*= 8*/)
+{
+	auto width = img.cols;
+	auto height = img.rows;
+
+	Maximas maxima;
+	for (int i = n + margin; i < width - n - margin; i += n + 1)
+	{
+		for (int j = n + margin; j < height - n - margin; j += n + 1)
+		{
+			auto max_i = i;
+			auto max_j = j;
+			auto max_val = img.ptr<PixelType>(j)[i];
+
+			for (int i2 = i; i2 <= i + n; ++i2)
+			{
+				for (int j2 = j; j2 <= j + n; ++j2)
+				{
+					auto curr_val = img.ptr<PixelType>(j2)[i2];
+					if (curr_val > max_val)
+					{
+						max_i = i2;
+						max_j = j2;
+						max_val = curr_val;
+					}
+				}
+			}
+
+			if (max_val < tau)
+				continue;
+
+			bool failed = false;
+			for (int i2 = max_i - n;
+				 i2 <= std::min(max_i + n, width - margin - 1);
+				 i2++)
+			{
+				for (int j2 = max_j - n;
+					 j2 <= std::min(max_j + n, height - margin - 1);
+					 j2++)
+				{
+					if (img.ptr<PixelType>(j2)[i2] > max_val &&
+						(i2 < i || i2 > i + n || j2 < j || j2 > j + n))
+					{
+						failed = true;
+						break;
+					}
+				}
+				if (failed)
+					break;
+			}
+
+			if (failed)
+				continue;
+
+			maxima.emplace_back(max_i, max_j, max_val);
+		}
+	}
+
+	return maxima;
+}
+
+std::tuple<Maximas, Angles> Detector::refineCorners(const Maximas &corners, const cv::Mat &I_angle, const cv::Mat &I_weight)
+{
+	auto r = 6;
+	auto width = I_angle.cols, height = I_angle.rows;
+
+	Angles angles;
+	Maximas refined_corners;
+	for (int i = 0; i < std::min(static_cast<int>(corners.size()), 80); ++i)
+	{
+		auto cu = corners.at(i).corner.x, cv = corners.at(i).corner.y;
+		auto u_range = cv::Range(std::max(cv - r, 0), std::min(cv + r, height) + 1);
+		auto v_range = cv::Range(std::max(cu - r, 0), std::min(cu + r, width) + 1);
+
+		auto angle = edgeOrientation(I_angle(u_range, v_range), I_weight(u_range, v_range));
+		if (angle.v1.norm() < 0.1 && angle.v2.norm() < 0.1)
+			continue;
+
+		angles.emplace_back(std::move(angle));
+		refined_corners.emplace_back(corners.at(i));
+	}
+
+	return {refined_corners, angles};
+}
+
+Angle Detector::edgeOrientation(const cv::Mat &img_angle, const cv::Mat &img_weight)
+{
+	const auto BIN_NUM = 32;
+	using Histogram = std::array<PixelType, BIN_NUM>;
+	Histogram angle_hist = {};
+
+	/* pair: first--index, second--hist_smoothed(index) */
+	using Mode = std::vector<std::pair<int, PixelType>>;
+
+	for (int u = 0; u < img_angle.cols; ++u)
+	{
+		for (int v = 0; v < img_angle.rows; ++v)
+		{
+			auto val = [](PixelType angle) {
+				angle += PI / 2;
+				while (angle > PI)
+					angle -= PI;
+				return angle;
+			}(img_angle.ptr<PixelType>(v)[u]);
+
+			auto bin = std::max(
+				std::min(
+					static_cast<int>(floor(val / PI * BIN_NUM)),
+					BIN_NUM - 1),
+				0);
+
+			angle_hist.at(bin) += img_weight.ptr<PixelType>(v)[u];
+		}
+	}
+
+	auto findModesMeanShift = [&angle_hist, &BIN_NUM](int sigma)
+		-> std::tuple<Mode, Histogram> {
+		Histogram hist_smoothed = {};
+		Mode modes;
+
+		for (int i = 0; i < BIN_NUM; ++i)
+		{
+			for (int j = -2 * sigma; j <= 2 * sigma; ++j)
+			{
+				auto id = (i + j + BIN_NUM) % BIN_NUM;
+				hist_smoothed.at(i) += angle_hist.at(id) * normpdf(j, 0, sigma);
+			}
+		}
+
+		auto is_all_zeros = [&hist_smoothed]() {
+			for (const auto &hist : hist_smoothed)
+				if (abs(hist - hist_smoothed.front()) >= 1e-5)
+					return false;
+
+			return true;
+		};
+		if (is_all_zeros())
+			return {modes, hist_smoothed};
+
+		for (int i = 0; i < BIN_NUM; ++i)
+		{
+			auto j = i;
+			while (true)
+			{
+				auto h0 = hist_smoothed.at(j);
+				auto j1 = (j + 1 + BIN_NUM) % BIN_NUM;
+				auto j2 = (j - 1 + BIN_NUM) % BIN_NUM;
+				auto h1 = hist_smoothed.at(j1);
+				auto h2 = hist_smoothed.at(j2);
+
+				if (h1 >= h0 && h1 >= h2)
+					j = j1;
+				else if (h2 > h0 && h2 > h1)
+					j = j2;
+				else
+					break;
+			}
+
+			auto contains = [&modes](int j) {
+				for (const auto &e : modes)
+					if (e.first == j)
+						return true;
+
+				return false;
+			};
+			if (modes.empty() || !contains(j))
+			{
+				modes.emplace_back(std::make_pair(j, hist_smoothed.at(j)));
+			}
+		}
+
+		std::sort(modes.begin(), modes.end(),
+				  [](const auto &lhs, const auto &rhs) { return lhs.second > rhs.second; });
+
+		return {modes, hist_smoothed};
+	};
+	auto [modes, hist_smoothed] = findModesMeanShift(1);
+
+	if (modes.size() <= 1)
+		return {Orientation(0, 0), Orientation(0, 0), 0};
+
+	struct SelectedModes
+	{
+		int id;
+		PixelType angle;
+	};
+	std::array<SelectedModes, 2> selected_mode;
+	for (int i = 0; i < 2; ++i)
+		selected_mode.at(i) = {modes.at(i).first, modes.at(i).first * PI / BIN_NUM};
+	std::sort(selected_mode.begin(), selected_mode.end(),
+			  [](const auto &lhs, const auto &rhs) { return lhs.angle < rhs.angle; });
+
+	auto delta_angle = std::min(
+		selected_mode.at(1).angle - selected_mode.at(0).angle,
+		selected_mode.at(1).angle - selected_mode.at(0).angle + PI);
+	if (delta_angle <= 0.5f)
+		return {Orientation(0, 0), Orientation(0, 0), 0};
+
+	return {Orientation(cos(selected_mode.at(0).angle), sin(selected_mode.at(0).angle)),
+			Orientation(cos(selected_mode.at(1).angle), sin(selected_mode.at(1).angle)),
+			(selected_mode.at(0).angle + selected_mode.at(1).angle) / 2};
+}
+
+Corners Detector::subPixelLocation(const cv::Mat &cmax, const Maximas &corners, const Angles &angles)
+{
+	Corners res;
+	for (int id = 0; id < corners.size(); ++id)
+	{
+		auto &point = corners.at(id).corner;
+		auto subPixelLocationImpl = [&cmax, &point, this]() {
+			if (point.x < half_patch_size ||
+				point.y < half_patch_size ||
+				point.x > cmax.cols - half_patch_size - 1 ||
+				point.y > cmax.rows - half_patch_size - 1)
+			{
+				return Point2p(point.x, point.y);
+			}
+
+			auto patch = cmax(
+				cv::Range(point.y - half_patch_size, point.y + half_patch_size + 1),
+				cv::Range(point.x - half_patch_size, point.x + half_patch_size + 1));
+			Eigen::MatrixXf e_patch;
+			cv::cv2eigen(patch, e_patch);
+			Eigen::Map<Eigen::RowVectorXf> v_patch(e_patch.data(), e_patch.size());
+			auto beta = patch_X * v_patch.transpose();
+			auto A = beta(0), B = beta(1), C = beta(2), D = beta(3), E = beta(4);
+			auto delta = 4 * A * B - E * E;
+			if (abs(delta) < 1e-7)
+				return Point2p(point.x, point.y);
+
+			auto x = -(2 * B * C - D * E) / delta;
+			auto y = -(2 * A * D - C * E) / delta;
+			if (abs(x) > half_patch_size || abs(y) > half_patch_size)
+				return Point2p(point.x, point.y);
+
+			return Point2p(point.x + x, point.y + y);
+		};
+		res.emplace_back(subPixelLocationImpl(), angles.at(id));
+	}
+
+	return res;
+}
+
+Eigen::MatrixXf Detector::calcPatchX()
+{
+	std::vector<int> vec;
+	for (int i = -half_patch_size; i <= half_patch_size; ++i)
+		vec.push_back(i);
+
+	auto size = 2 * half_patch_size + 1;
+	Eigen::MatrixXf XX = Eigen::MatrixXf(size * size, 6);
+	for (int i = 0; i < size * size; ++i)
+	{
+		auto x = vec.at(i / size);
+		auto y = vec.at(i % size);
+		XX(i, 0) = x * x;
+		XX(i, 1) = y * y;
+		XX(i, 2) = x;
+		XX(i, 3) = y;
+		XX(i, 4) = x * y;
+		XX(i, 5) = 1;
+	}
+
+	return (XX.transpose() * XX).inverse() * XX.transpose();
+}
+
+ScoreCorners Detector::scoreCorners(const cv::Mat &gray_image, const cv::Mat img_angle, const cv::Mat img_weight, const Corners &corners)
+{
+	auto width = gray_image.cols, height = gray_image.rows;
+	std::array<int, 3> radius = {4, 8, 12};
+
+	ScoreCorners scored_corners;
+	for (const auto &corner : corners)
+	{
+		auto x = round(corner.point.x);
+		auto y = round(corner.point.y);
+
+		std::vector<PixelType> scores;
+		for (const auto &r : radius)
+		{
+			if (x > r && x < width - r && y > r && y < height - r)
+			{
+				auto x_range = cv::Range(y - r, y + r + 1);
+				auto y_range = cv::Range(x - r, x + r + 1);
+
+				auto img_sub = gray_image(x_range, y_range).clone();
+				auto img_weight_sub = img_weight(x_range, y_range).clone();
+				scores.push_back(cornerCorrelationScore(img_sub, img_weight_sub, corner.angle.v1, corner.angle.v2));
+			}
+		}
+		ScoreCorner sc = {corner, *std::max_element(scores.begin(), scores.end())};
+		scored_corners.emplace_back(sc);
+	}
+
+	return scored_corners;
+}
+
+PixelType Detector::cornerCorrelationScore(const cv::Mat &img, const cv::Mat &img_weight, const Orientation &v1, const Orientation &v2)
+{
+	auto imgWeight = img_weight;
+
+	//center
+	int c[] = {imgWeight.cols / 2, imgWeight.cols / 2};
+
+	//compute gradient filter kernel(bandwith = 3 px)
+	cv::Mat img_filter = cv::Mat::ones(imgWeight.size(), imgWeight.type());
+	img_filter = img_filter * -1;
+	for (int i = 0; i < imgWeight.cols; i++)
+	{
+		for (int j = 0; j < imgWeight.rows; j++)
+		{
+			cv::Point2f p1 = cv::Point2f(i - c[0], j - c[1]);
+			cv::Point2f p2 = cv::Point2f(p1.x * v1.x() * v1.x() + p1.y * v1.x() * v1.y(),
+										 p1.x * v1.x() * v1.y() + p1.y * v1.y() * v1.y());
+			cv::Point2f p3 = cv::Point2f(p1.x * v2.x() * v2.x() + p1.y * v2.x() * v2.y(),
+										 p1.x * v2.x() * v2.y() + p1.y * v2.y() * v2.y());
+			float norm1 = sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y));
+			float norm2 = sqrt((p1.x - p3.x) * (p1.x - p3.x) + (p1.y - p3.y) * (p1.y - p3.y));
+			if (norm1 <= 1.5 || norm2 <= 1.5)
+			{
+				img_filter.ptr<PixelType>(j)[i] = 1;
+			}
+		}
+	}
+
+	//normalize
+	cv::Mat mean, std, mean1, std1;
+	meanStdDev(imgWeight, mean, std);
+	meanStdDev(img_filter, mean1, std1);
+	for (int i = 0; i < imgWeight.cols; i++)
+	{
+		for (int j = 0; j < imgWeight.rows; j++)
+		{
+			imgWeight.ptr<PixelType>(j)[i] = (PixelType)(imgWeight.ptr<PixelType>(j)[i] - mean.ptr<double>(0)[0]) / (PixelType)std.ptr<double>(0)[0];
+			img_filter.ptr<PixelType>(j)[i] = (PixelType)(img_filter.ptr<PixelType>(j)[i] - mean1.ptr<double>(0)[0]) / (PixelType)std1.ptr<double>(0)[0];
+		}
+	}
+
+	//convert into vectors
+	std::vector<float> vec_filter, vec_weight;
+	for (int i = 0; i < imgWeight.cols; i++)
+	{
+		for (int j = 0; j < imgWeight.rows; j++)
+		{
+			vec_filter.push_back(img_filter.ptr<PixelType>(j)[i]);
+			vec_weight.push_back(imgWeight.ptr<PixelType>(j)[i]);
+		}
+	}
+
+	//compute gradient score
+	float sum = 0;
+	for (int i = 0; i < vec_weight.size(); i++)
+	{
+		sum += vec_weight[i] * vec_filter[i];
+	}
+	sum = (PixelType)sum / (PixelType)(vec_weight.size() - 1);
+	PixelType score_gradient = sum >= 0 ? sum : 0;
+
+	//create intensity filter kernel
+	cv::Mat kernelA, kernelB, kernelC, kernelD;
+	createkernel(atan2(v1.y(), v1.x()), atan2(v2.y(), v2.x()), c[0], kernelA, kernelB, kernelC, kernelD); //1.1 �������ֺ�
+
+	//checkerboard responses
+	float a1, a2, b1, b2;
+	a1 = kernelA.dot(img);
+	a2 = kernelB.dot(img);
+	b1 = kernelC.dot(img);
+	b2 = kernelD.dot(img);
+
+	float mu = (a1 + a2 + b1 + b2) / 4;
+
+	float score_a = (a1 - mu) >= (a2 - mu) ? (a2 - mu) : (a1 - mu);
+	float score_b = (mu - b1) >= (mu - b2) ? (mu - b2) : (mu - b1);
+	float score_1 = score_a >= score_b ? score_b : score_a;
+
+	score_b = (b1 - mu) >= (b2 - mu) ? (b2 - mu) : (b1 - mu);
+	score_a = (mu - a1) >= (mu - a2) ? (mu - a2) : (mu - a1);
+	float score_2 = score_a >= score_b ? score_b : score_a;
+
+	float score_intensity = score_1 >= score_2 ? score_1 : score_2;
+	score_intensity = score_intensity > 0.0 ? score_intensity : 0.0;
+
+	return score_gradient * score_intensity;
+}
+
+void Detector::createkernel(PixelType angle1, PixelType angle2, int kernelSize, cv::Mat &kernelA, cv::Mat &kernelB, cv::Mat &kernelC, cv::Mat &kernelD)
+{
+	int width = (int)kernelSize * 2 + 1;
+	int height = (int)kernelSize * 2 + 1;
+	kernelA = cv::Mat::zeros(height, width, MatType);
+	kernelB = cv::Mat::zeros(height, width, MatType);
+	kernelC = cv::Mat::zeros(height, width, MatType);
+	kernelD = cv::Mat::zeros(height, width, MatType);
+
+	for (int u = 0; u < width; ++u)
+	{
+		for (int v = 0; v < height; ++v)
+		{
+			PixelType vec[] = {u - kernelSize, v - kernelSize};				  //�൱�ڽ�����ԭ���ƶ���������
+			PixelType dis = std::sqrt(vec[0] * vec[0] + vec[1] * vec[1]);	 //�൱�ڼ��㵽���ĵľ���
+			PixelType side1 = vec[0] * (-sin(angle1)) + vec[1] * cos(angle1); //�൱�ڽ�����ԭ���ƶ���ĺ˽�����ת���Դ˲������ֺ�
+			PixelType side2 = vec[0] * (-sin(angle2)) + vec[1] * cos(angle2); //X=X0*cos+Y0*sin;Y=Y0*cos-X0*sin
+			if (side1 <= -0.1 && side2 <= -0.1)
+			{
+				kernelA.ptr<PixelType>(v)[u] = normpdf(dis, 0, kernelSize / 2);
+			}
+			if (side1 >= 0.1 && side2 >= 0.1)
+			{
+				kernelB.ptr<PixelType>(v)[u] = normpdf(dis, 0, kernelSize / 2);
+			}
+			if (side1 <= -0.1 && side2 >= 0.1)
+			{
+				kernelC.ptr<PixelType>(v)[u] = normpdf(dis, 0, kernelSize / 2);
+			}
+			if (side1 >= 0.1 && side2 <= -0.1)
+			{
+				kernelD.ptr<PixelType>(v)[u] = normpdf(dis, 0, kernelSize / 2);
+			}
+		}
+	}
+	//std::cout << "kernelA:" << kernelA << endl << "kernelB:" << kernelB << endl
+	//	<< "kernelC:" << kernelC<< endl << "kernelD:" << kernelD << endl;
+	//��һ��
+	kernelA = kernelA / cv::sum(kernelA)[0];
+	kernelB = kernelB / cv::sum(kernelB)[0];
+	kernelC = kernelC / cv::sum(kernelC)[0];
+	kernelD = kernelD / cv::sum(kernelD)[0];
+}
+
+void Detector::eraseLowScoreCorners(ScoreCorners &scored_corners, PixelType threshold)
+{
+	for (auto it = scored_corners.begin(); it != scored_corners.end();)
+	{
+		if (it->score < threshold)
+			it = scored_corners.erase(it);
+		else
+			++it;
+	}
+}
+
+/////////////////////////////////////CUDA/////////////////////////////////////
+#ifdef USE_CUDA
+void Detector::initCuda(const cv::Size &size)
+{
+	/* cuda first initialization */
+	auto A = cv::Mat::ones(cv::Size(3, 3), MatType);
+	auto B = cv::Mat::ones(cv::Size(2, 2), MatType);
+	cv::cuda::GpuMat gA(A), gR;
+	cv::cuda::add(gA, gA, gR);
+
+	cv::Mat F = cudaFilter(A, B);
+
+	/* filter initialization */
+	cv::Mat dx = (cv::Mat_<PixelType>(1, 3) << -1, 0, 1);
+	cv::Mat dy;
+	cv::transpose(dx, dy);
+
+	auto filter = [](const cv::Mat &kernel, cv::Ptr<cv::cuda::Filter> &f) {
+		cv::Mat flip_kernel;
+		cv::flip(kernel, flip_kernel, -1);
+		cv::Point anchor(flip_kernel.cols - flip_kernel.cols / 2 - 1, flip_kernel.rows - flip_kernel.rows / 2 - 1);
+
+		f = cv::cuda::createLinearFilter(MatType, MatType, flip_kernel, anchor, cv::BORDER_CONSTANT);
+	};
+	filter(dx, filter_dx);
+	filter(dy, filter_dy);
+	filter_G = cv::cuda::createGaussianFilter(MatType, MatType, cv::Size(7 * sigma + 1, 7 * sigma + 1), sigma);
+
+	/* mat initialization */
+	cv::Mat ones_mat = cv::Mat::ones(size, MatType);
+	cv::Mat zeros_mat = cv::Mat::zeros(size, MatType);
+	g_ones.upload(ones_mat);
+	g_zeros.upload(zeros_mat);
+}
+
+std::tuple<cv::Mat, cv::Mat, cv::Mat> Detector::secondDerivCornerMetricCuda(const cv::Mat &gray_image)
+{
+	auto ttt1 = tic();
+	cv::cuda::GpuMat g_gray_image(gray_image), g_gaussian_image;
+	filter_G->apply(g_gray_image, g_gaussian_image);
+	toc(ttt1, "ttt1");
+
+	// first derivative
+	auto ttt2 = tic();
+	cv::cuda::GpuMat g_Ix, g_Iy, g_I_45, g_I_n45;
+	filter_dx->apply(g_gaussian_image, g_Ix);
+	filter_dy->apply(g_gaussian_image, g_Iy);
+	cv::cuda::GpuMat temp1, temp2;
+	cv::cuda::multiply(g_Ix, g_ones, temp1, cos(PI / 4));
+	cv::cuda::multiply(g_Iy, g_ones, temp2, sin(PI / 4));
+	cv::cuda::add(temp1, temp2, g_I_45);
+	cv::cuda::subtract(temp1, temp2, g_I_n45);
+	toc(ttt2, "ttt2");
+
+	// second derivative
+	auto ttt3 = tic();
+	cv::cuda::GpuMat g_Ixy, g_I_45_x, g_I_45_y, g_I_45_45;
+	filter_dy->apply(g_Ix, g_Ixy);
+	filter_dx->apply(g_I_45, g_I_45_x);
+	filter_dy->apply(g_I_45, g_I_45_y);
+	cv::cuda::multiply(g_I_45_x, g_ones, temp1, cos(-PI / 4));
+	cv::cuda::multiply(g_I_45_y, g_ones, temp2, sin(-PI / 4));
+	cv::cuda::add(temp1, temp2, g_I_45_45);
+	toc(ttt3, "ttt3");
+
+	// cmax
+	auto ttt4 = tic();
+	auto sigma_2 = pow(sigma, 2), sigma_n15 = -1.5 * sigma;
+	cv::cuda::GpuMat g_cxy, g_c45, g_cmax;
+	cv::cuda::abs(g_I_45, temp1);
+	cv::cuda::abs(g_I_n45, temp2);
+	cv::cuda::add(temp1, temp2, temp1);
+	cv::cuda::multiply(temp1, g_ones, temp1, sigma_n15);
+	cv::cuda::abs(g_Ixy, temp2);
+	cv::cuda::scaleAdd(temp2, sigma_2, temp1, g_cxy);
+
+	cv::cuda::abs(g_Ix, temp1);
+	cv::cuda::abs(g_Iy, temp2);
+	cv::cuda::add(temp1, temp2, temp1);
+	cv::cuda::multiply(temp1, g_ones, temp1, sigma_n15);
+	cv::cuda::abs(g_I_45_45, temp2);
+	cv::cuda::scaleAdd(temp2, sigma_2, temp1, g_c45);
+
+	cv::cuda::max(g_cxy, g_c45, g_cmax);
+	cv::cuda::max(g_cmax, g_zeros, g_cmax);
+	toc(ttt4, "ttt4");
+
+	// download
+	auto ttt5 = tic();
+	cv::Mat Ix, Iy, cmax;
+	g_Ix.download(Ix);
+	g_Iy.download(Iy);
+	g_cmax.download(cmax);
+	toc(ttt5, "ttt5");
+
+	return {Ix, Iy, cmax};
+}
+#endif
+/////////////////////////////////////CUDA/////////////////////////////////////
