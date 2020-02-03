@@ -7,6 +7,9 @@
    valid -- Return only the submatrix containing elements that were not influenced by the border */
 cv::Mat conv2(const cv::Mat& img, const cv::Mat& kernel, const cv::String& mode);
 
+cv::Mat cudaConv2(const cv::Mat& img, const cv::Mat& kernel);
+cv::Mat cudaFilter(const cv::Mat &img, const cv::Mat &kernel);
+
 PixelType normpdf(PixelType dist, PixelType mu, PixelType sigma);
 
 

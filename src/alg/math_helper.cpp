@@ -1,7 +1,9 @@
 #include "math_helper.h"
+#include <opencv2/cudaarithm.hpp>
+#include <opencv2/cudafilters.hpp>
 using namespace cv;
 
-Mat conv2(const Mat& img, const Mat& kernel, const String& mode)
+Mat conv2(const Mat &img, const Mat &kernel, const String &mode)
 {
 	if (mode != "full" && mode != "same" && mode != "valid")
 	{
@@ -35,4 +37,14 @@ PixelType normpdf(PixelType dist, PixelType mu, PixelType sigma)
 	return s / (sqrt(2 * PI) * sigma);
 }
 
+cv::Mat cudaFilter(const cv::Mat &img, const cv::Mat &kernel)
+{
+	Mat flip_kernel; flip(kernel, flip_kernel, -1);
+	Point anchor(flip_kernel.cols - flip_kernel.cols / 2 - 1, flip_kernel.rows - flip_kernel.rows / 2 - 1);
+	auto filter = cv::cuda::createLinearFilter(CV_32FC1, CV_32FC1, flip_kernel, anchor, BORDER_CONSTANT);
 
+	cv::cuda::GpuMat g_img(img), g_res;
+	filter->apply(g_img, g_res);
+	cv::Mat res; g_res.download(res);
+	return res;
+}

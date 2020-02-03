@@ -5,26 +5,56 @@
 #include <iostream>
 #include <iomanip>
 #include <array>
-
+#include <memory>
+#include <opencv2/cudaarithm.hpp>
+#include <opencv2/cudafilters.hpp>
 
 class Detector
 {
 public:
-	Detector(const cv::Mat& image)
+	Detector(const cv::Mat &image)
 		: image(image)
 	{
+		initCuda();
+
+		auto total = tic();
 		findCorners();
+		toc(total, "total");
+	}
+
+	void initCuda()
+	{
+		auto A = cv::Mat::ones(cv::Size(3, 3), MatType);
+		auto B = cv::Mat::ones(cv::Size(2, 2), MatType);
+		cv::cuda::GpuMat gA(A), gR;
+		cv::cuda::add(gA, gA, gR);
+
+        cv::Mat F = cudaFilter(A, B);
 	}
 
 	void findCorners()
 	{
-		auto t1 = tic();
-		auto [Ix, Iy, cmax] = secondDerivCornerMetric();
-		toc(t1, "t1:");
+		auto t0 = tic();
+		cv::cvtColor(image, gray_image, cv::COLOR_BGR2GRAY);
+		[&](cv::Mat &img) {
+			img.convertTo(img, MatType);
+			img = img / 255;
+		}(gray_image);
+		toc(t0, "t0:");
+
+		// auto t1 = tic();
+		// auto [Ix, Iy, cmax] = secondDerivCornerMetric();
+		// toc(t1, "t1:");
+
+		auto t15 = tic();
+		auto [Ix, Iy, cmax] = secondDerivCornerMetricCuda();
+		toc(t15, "t15:");
 
 		auto t2 = tic();
-		cv::Mat I_angle; cv::phase(Ix, Iy, I_angle);
-		cv::Mat I_weight; cv::magnitude(Ix, Iy, I_weight);
+		cv::Mat I_angle;
+		cv::phase(Ix, Iy, I_angle);
+		cv::Mat I_weight;
+		cv::magnitude(Ix, Iy, I_weight);
 		toc(t2, "t2:");
 
 		auto t3 = tic();
@@ -32,7 +62,7 @@ public:
 		toc(t3, "t3:");
 
 		std::sort(corners.begin(), corners.end(),
-			[](const auto& lhs, const auto& rhs) { return lhs.val > rhs.val; });
+				  [](const auto &lhs, const auto &rhs) { return lhs.val > rhs.val; });
 
 		auto t4 = tic();
 		auto [refined_corners, angles] = refineCorners(corners, I_angle, I_weight);
@@ -47,19 +77,18 @@ public:
 		eraseLowScoreCorners(scored_corners, 0.01);
 		toc(t6, "t6:");
 
-
-		auto img4 = image;
-		for (auto& sc : scored_corners)
-		{
-			cv::circle(img4, sc.corner.point, 3, cv::Scalar(0, 0, 255), -1);
-			cv::putText(img4, std::to_string(sc.score), sc.corner.point, cv::FONT_HERSHEY_COMPLEX, 0.4, cv::Scalar(0, 255, 255));
-		}
-		cv::imshow("scored_corners", img4);
-		std::cout << "scored_corners size: " << scored_corners.size() << std::endl;
+		// auto img4 = image;
+		// for (auto &sc : scored_corners)
+		// {
+		// 	cv::circle(img4, sc.corner.point, 3, cv::Scalar(0, 0, 255), -1);
+		// 	cv::putText(img4, std::to_string(sc.score), sc.corner.point, cv::FONT_HERSHEY_COMPLEX, 0.4, cv::Scalar(0, 255, 255));
+		// }
+		// cv::imshow("scored_corners", img4);
+		// std::cout << "scored_corners size: " << scored_corners.size() << std::endl;
 	}
 
 private:
-	void dump(const cv::String& name, const cv::Mat& mat)
+	void dump(const cv::String &name, const cv::Mat &mat)
 	{
 		auto width = mat.cols;
 		auto height = mat.rows;
@@ -78,40 +107,32 @@ private:
 
 	std::tuple<cv::Mat, cv::Mat, cv::Mat> secondDerivCornerMetric()
 	{
-		auto convertToCV_32F = [&](cv::Mat& img)
-		{
-			img.convertTo(img, MatType);
-			img = img / 255;
-		};
-
 		auto sigma = 2;
 		auto gaussian_kernel_size = round(sigma * 7) + 1;
 		//cv::Mat gray_image, gaussian_image;
-		cv::cvtColor(image, gray_image, cv::COLOR_BGR2GRAY);
-		convertToCV_32F(gray_image);
 		//cv::GaussianBlur(gray_image, gaussian_image, cv::Size(gaussian_kernel_size, gaussian_kernel_size), sigma);
 		//convertToCV_32F(gaussian_image);
 
-		cv::Mat G = (cv::Mat_<PixelType>(15, 15) <<
-			1.90451441501264e-07, 9.67192226178406e-07, 3.82531946034795e-06, 1.17828134542578e-05, 2.82655000888421e-05, 5.28069062757794e-05, 7.68335952638070e-05, 8.70638696167456e-05, 7.68335952638070e-05, 5.28069062757794e-05, 2.82655000888421e-05, 1.17828134542578e-05, 3.82531946034795e-06, 9.67192226178406e-07, 1.90451441501264e-07,
-			9.67192226178406e-07, 4.91180741403700e-06, 1.94265751707265e-05, 5.98380641576443e-05, 0.000143544053746591, 0.000268175598125502, 0.000390193192882707, 0.000442146812912245, 0.000390193192882707, 0.000268175598125502, 0.000143544053746591, 5.98380641576443e-05, 1.94265751707265e-05, 4.91180741403700e-06, 9.67192226178406e-07,
-			3.82531946034795e-06, 1.94265751707265e-05, 7.68335952638070e-05, 0.000236664134694527, 0.000567727745686803, 0.00106065506580148, 0.00154324401461245, 0.00174872456786274, 0.00154324401461245, 0.00106065506580148, 0.000567727745686803, 0.000236664134694527, 7.68335952638070e-05, 1.94265751707265e-05, 3.82531946034795e-06,
-			1.17828134542578e-05, 5.98380641576443e-05, 0.000236664134694527, 0.000728976855220689, 0.00174872456786274, 0.00326704760457197, 0.00475352621580118, 0.00538645087804772, 0.00475352621580118, 0.00326704760457197, 0.00174872456786274, 0.000728976855220689, 0.000236664134694527, 5.98380641576443e-05, 1.17828134542578e-05,
-			2.82655000888421e-05, 0.000143544053746591, 0.000567727745686803, 0.00174872456786274, 0.00419497216179922, 0.00783723978282210, 0.0114031165983104, 0.0129214239335160, 0.0114031165983104, 0.00783723978282210, 0.00419497216179922, 0.00174872456786274, 0.000567727745686803, 0.000143544053746591, 2.82655000888421e-05,
-			5.28069062757794e-05, 0.000268175598125502, 0.00106065506580148, 0.00326704760457197, 0.00783723978282210, 0.0146418915416844, 0.0213038264869216, 0.0241403980280593, 0.0213038264869216, 0.0146418915416844, 0.00783723978282210, 0.00326704760457197, 0.00106065506580148, 0.000268175598125502, 5.28069062757794e-05,
-			7.68335952638070e-05, 0.000390193192882707, 0.00154324401461245, 0.00475352621580118, 0.0114031165983104, 0.0213038264869216, 0.0309968846369868, 0.0351240718762925, 0.0309968846369868, 0.0213038264869216, 0.0114031165983104, 0.00475352621580118, 0.00154324401461245, 0.000390193192882707, 7.68335952638070e-05,
-			8.70638696167456e-05, 0.000442146812912245, 0.00174872456786274, 0.00538645087804772, 0.0129214239335160, 0.0241403980280593, 0.0351240718762925, 0.0398007877120288, 0.0351240718762925, 0.0241403980280593, 0.0129214239335160, 0.00538645087804772, 0.00174872456786274, 0.000442146812912245, 8.70638696167456e-05,
-			7.68335952638070e-05, 0.000390193192882707, 0.00154324401461245, 0.00475352621580118, 0.0114031165983104, 0.0213038264869216, 0.0309968846369868, 0.0351240718762925, 0.0309968846369868, 0.0213038264869216, 0.0114031165983104, 0.00475352621580118, 0.00154324401461245, 0.000390193192882707, 7.68335952638070e-05,
-			5.28069062757794e-05, 0.000268175598125502, 0.00106065506580148, 0.00326704760457197, 0.00783723978282210, 0.0146418915416844, 0.0213038264869216, 0.0241403980280593, 0.0213038264869216, 0.0146418915416844, 0.00783723978282210, 0.00326704760457197, 0.00106065506580148, 0.000268175598125502, 5.28069062757794e-05,
-			2.82655000888421e-05, 0.000143544053746591, 0.000567727745686803, 0.00174872456786274, 0.00419497216179922, 0.00783723978282210, 0.0114031165983104, 0.0129214239335160, 0.0114031165983104, 0.00783723978282210, 0.00419497216179922, 0.00174872456786274, 0.000567727745686803, 0.000143544053746591, 2.82655000888421e-05,
-			1.17828134542578e-05, 5.98380641576443e-05, 0.000236664134694527, 0.000728976855220689, 0.00174872456786274, 0.00326704760457197, 0.00475352621580118, 0.00538645087804772, 0.00475352621580118, 0.00326704760457197, 0.00174872456786274, 0.000728976855220689, 0.000236664134694527, 5.98380641576443e-05, 1.17828134542578e-05,
-			3.82531946034795e-06, 1.94265751707265e-05, 7.68335952638070e-05, 0.000236664134694527, 0.000567727745686803, 0.00106065506580148, 0.00154324401461245, 0.00174872456786274, 0.00154324401461245, 0.00106065506580148, 0.000567727745686803, 0.000236664134694527, 7.68335952638070e-05, 1.94265751707265e-05, 3.82531946034795e-06,
-			9.67192226178406e-07, 4.91180741403700e-06, 1.94265751707265e-05, 5.98380641576443e-05, 0.000143544053746591, 0.000268175598125502, 0.000390193192882707, 0.000442146812912245, 0.000390193192882707, 0.000268175598125502, 0.000143544053746591, 5.98380641576443e-05, 1.94265751707265e-05, 4.91180741403700e-06, 9.67192226178406e-07,
-			1.90451441501264e-07, 9.67192226178406e-07, 3.82531946034795e-06, 1.17828134542578e-05, 2.82655000888421e-05, 5.28069062757794e-05, 7.68335952638070e-05, 8.70638696167456e-05, 7.68335952638070e-05, 5.28069062757794e-05, 2.82655000888421e-05, 1.17828134542578e-05, 3.82531946034795e-06, 9.67192226178406e-07, 1.90451441501264e-07);
+		cv::Mat G = (cv::Mat_<PixelType>(15, 15) << 1.90451441501264e-07, 9.67192226178406e-07, 3.82531946034795e-06, 1.17828134542578e-05, 2.82655000888421e-05, 5.28069062757794e-05, 7.68335952638070e-05, 8.70638696167456e-05, 7.68335952638070e-05, 5.28069062757794e-05, 2.82655000888421e-05, 1.17828134542578e-05, 3.82531946034795e-06, 9.67192226178406e-07, 1.90451441501264e-07,
+					 9.67192226178406e-07, 4.91180741403700e-06, 1.94265751707265e-05, 5.98380641576443e-05, 0.000143544053746591, 0.000268175598125502, 0.000390193192882707, 0.000442146812912245, 0.000390193192882707, 0.000268175598125502, 0.000143544053746591, 5.98380641576443e-05, 1.94265751707265e-05, 4.91180741403700e-06, 9.67192226178406e-07,
+					 3.82531946034795e-06, 1.94265751707265e-05, 7.68335952638070e-05, 0.000236664134694527, 0.000567727745686803, 0.00106065506580148, 0.00154324401461245, 0.00174872456786274, 0.00154324401461245, 0.00106065506580148, 0.000567727745686803, 0.000236664134694527, 7.68335952638070e-05, 1.94265751707265e-05, 3.82531946034795e-06,
+					 1.17828134542578e-05, 5.98380641576443e-05, 0.000236664134694527, 0.000728976855220689, 0.00174872456786274, 0.00326704760457197, 0.00475352621580118, 0.00538645087804772, 0.00475352621580118, 0.00326704760457197, 0.00174872456786274, 0.000728976855220689, 0.000236664134694527, 5.98380641576443e-05, 1.17828134542578e-05,
+					 2.82655000888421e-05, 0.000143544053746591, 0.000567727745686803, 0.00174872456786274, 0.00419497216179922, 0.00783723978282210, 0.0114031165983104, 0.0129214239335160, 0.0114031165983104, 0.00783723978282210, 0.00419497216179922, 0.00174872456786274, 0.000567727745686803, 0.000143544053746591, 2.82655000888421e-05,
+					 5.28069062757794e-05, 0.000268175598125502, 0.00106065506580148, 0.00326704760457197, 0.00783723978282210, 0.0146418915416844, 0.0213038264869216, 0.0241403980280593, 0.0213038264869216, 0.0146418915416844, 0.00783723978282210, 0.00326704760457197, 0.00106065506580148, 0.000268175598125502, 5.28069062757794e-05,
+					 7.68335952638070e-05, 0.000390193192882707, 0.00154324401461245, 0.00475352621580118, 0.0114031165983104, 0.0213038264869216, 0.0309968846369868, 0.0351240718762925, 0.0309968846369868, 0.0213038264869216, 0.0114031165983104, 0.00475352621580118, 0.00154324401461245, 0.000390193192882707, 7.68335952638070e-05,
+					 8.70638696167456e-05, 0.000442146812912245, 0.00174872456786274, 0.00538645087804772, 0.0129214239335160, 0.0241403980280593, 0.0351240718762925, 0.0398007877120288, 0.0351240718762925, 0.0241403980280593, 0.0129214239335160, 0.00538645087804772, 0.00174872456786274, 0.000442146812912245, 8.70638696167456e-05,
+					 7.68335952638070e-05, 0.000390193192882707, 0.00154324401461245, 0.00475352621580118, 0.0114031165983104, 0.0213038264869216, 0.0309968846369868, 0.0351240718762925, 0.0309968846369868, 0.0213038264869216, 0.0114031165983104, 0.00475352621580118, 0.00154324401461245, 0.000390193192882707, 7.68335952638070e-05,
+					 5.28069062757794e-05, 0.000268175598125502, 0.00106065506580148, 0.00326704760457197, 0.00783723978282210, 0.0146418915416844, 0.0213038264869216, 0.0241403980280593, 0.0213038264869216, 0.0146418915416844, 0.00783723978282210, 0.00326704760457197, 0.00106065506580148, 0.000268175598125502, 5.28069062757794e-05,
+					 2.82655000888421e-05, 0.000143544053746591, 0.000567727745686803, 0.00174872456786274, 0.00419497216179922, 0.00783723978282210, 0.0114031165983104, 0.0129214239335160, 0.0114031165983104, 0.00783723978282210, 0.00419497216179922, 0.00174872456786274, 0.000567727745686803, 0.000143544053746591, 2.82655000888421e-05,
+					 1.17828134542578e-05, 5.98380641576443e-05, 0.000236664134694527, 0.000728976855220689, 0.00174872456786274, 0.00326704760457197, 0.00475352621580118, 0.00538645087804772, 0.00475352621580118, 0.00326704760457197, 0.00174872456786274, 0.000728976855220689, 0.000236664134694527, 5.98380641576443e-05, 1.17828134542578e-05,
+					 3.82531946034795e-06, 1.94265751707265e-05, 7.68335952638070e-05, 0.000236664134694527, 0.000567727745686803, 0.00106065506580148, 0.00154324401461245, 0.00174872456786274, 0.00154324401461245, 0.00106065506580148, 0.000567727745686803, 0.000236664134694527, 7.68335952638070e-05, 1.94265751707265e-05, 3.82531946034795e-06,
+					 9.67192226178406e-07, 4.91180741403700e-06, 1.94265751707265e-05, 5.98380641576443e-05, 0.000143544053746591, 0.000268175598125502, 0.000390193192882707, 0.000442146812912245, 0.000390193192882707, 0.000268175598125502, 0.000143544053746591, 5.98380641576443e-05, 1.94265751707265e-05, 4.91180741403700e-06, 9.67192226178406e-07,
+					 1.90451441501264e-07, 9.67192226178406e-07, 3.82531946034795e-06, 1.17828134542578e-05, 2.82655000888421e-05, 5.28069062757794e-05, 7.68335952638070e-05, 8.70638696167456e-05, 7.68335952638070e-05, 5.28069062757794e-05, 2.82655000888421e-05, 1.17828134542578e-05, 3.82531946034795e-06, 9.67192226178406e-07, 1.90451441501264e-07);
 		cv::Mat gaussian_image = conv2(gray_image, G, "same");
 
 		cv::Mat dx = (cv::Mat_<PixelType>(1, 3) << -1, 0, 1);
-		cv::Mat dy; cv::transpose(dx, dy);
+		cv::Mat dy;
+		cv::transpose(dx, dy);
 
 		// first derivative
 		auto Ix = conv2(gaussian_image, dx, "same");
@@ -125,23 +146,126 @@ private:
 		auto I_45_y = conv2(I_45, dy, "same");
 		auto I_45_45 = I_45_x * cos(-PI / 4) + I_45_y * sin(-PI / 4);
 
-		auto cxy = static_cast<cv::Mat>(pow(sigma, 2) * cv::abs(Ixy)
-			- 1.5 * sigma * (cv::abs(I_45) + cv::abs(I_n45)));
-		auto c45 = static_cast<cv::Mat>(pow(sigma, 2) * cv::abs(I_45_45)
-			- 1.5 * sigma * (cv::abs(Ix) + cv::abs(Iy)));
+		auto cxy = static_cast<cv::Mat>(pow(sigma, 2) * cv::abs(Ixy) - 1.5 * sigma * (cv::abs(I_45) + cv::abs(I_n45)));
+		auto c45 = static_cast<cv::Mat>(pow(sigma, 2) * cv::abs(I_45_45) - 1.5 * sigma * (cv::abs(Ix) + cv::abs(Iy)));
 		auto cmax = static_cast<cv::Mat>(cv::max(cxy, c45));
-		[](cv::Mat& img)
-		{
+		[](cv::Mat &img) {
 			for (int i = 0; i < img.cols; ++i)
 				for (int j = 0; j < img.rows; ++j)
 					if (img.ptr<PixelType>(j)[i] < 0)
 						img.ptr<PixelType>(j)[i] = 0;
 		}(cmax);
 
-		return { Ix, Iy, cmax };
+		return {Ix, Iy, cmax};
 	}
 
-	Maximas nonMaximumSuppression(const cv::Mat& img, int n = 8, PixelType tau = 0.06f, int margin = 8)
+	std::tuple<cv::Mat, cv::Mat, cv::Mat> secondDerivCornerMetricCuda()
+	{
+		auto filter = [](const cv::Mat &kernel, cv::Ptr<cv::cuda::Filter> &f) {
+			cv::Mat flip_kernel;
+			cv::flip(kernel, flip_kernel, -1);
+			cv::Point anchor(flip_kernel.cols - flip_kernel.cols / 2 - 1, flip_kernel.rows - flip_kernel.rows / 2 - 1);
+
+			f = cv::cuda::createLinearFilter(MatType, MatType, flip_kernel, anchor, cv::BORDER_CONSTANT);
+		};
+
+		auto sigma = 2;
+
+		cv::Mat G = (cv::Mat_<PixelType>(15, 15) << 1.90451441501264e-07, 9.67192226178406e-07, 3.82531946034795e-06, 1.17828134542578e-05, 2.82655000888421e-05, 5.28069062757794e-05, 7.68335952638070e-05, 8.70638696167456e-05, 7.68335952638070e-05, 5.28069062757794e-05, 2.82655000888421e-05, 1.17828134542578e-05, 3.82531946034795e-06, 9.67192226178406e-07, 1.90451441501264e-07,
+					 9.67192226178406e-07, 4.91180741403700e-06, 1.94265751707265e-05, 5.98380641576443e-05, 0.000143544053746591, 0.000268175598125502, 0.000390193192882707, 0.000442146812912245, 0.000390193192882707, 0.000268175598125502, 0.000143544053746591, 5.98380641576443e-05, 1.94265751707265e-05, 4.91180741403700e-06, 9.67192226178406e-07,
+					 3.82531946034795e-06, 1.94265751707265e-05, 7.68335952638070e-05, 0.000236664134694527, 0.000567727745686803, 0.00106065506580148, 0.00154324401461245, 0.00174872456786274, 0.00154324401461245, 0.00106065506580148, 0.000567727745686803, 0.000236664134694527, 7.68335952638070e-05, 1.94265751707265e-05, 3.82531946034795e-06,
+					 1.17828134542578e-05, 5.98380641576443e-05, 0.000236664134694527, 0.000728976855220689, 0.00174872456786274, 0.00326704760457197, 0.00475352621580118, 0.00538645087804772, 0.00475352621580118, 0.00326704760457197, 0.00174872456786274, 0.000728976855220689, 0.000236664134694527, 5.98380641576443e-05, 1.17828134542578e-05,
+					 2.82655000888421e-05, 0.000143544053746591, 0.000567727745686803, 0.00174872456786274, 0.00419497216179922, 0.00783723978282210, 0.0114031165983104, 0.0129214239335160, 0.0114031165983104, 0.00783723978282210, 0.00419497216179922, 0.00174872456786274, 0.000567727745686803, 0.000143544053746591, 2.82655000888421e-05,
+					 5.28069062757794e-05, 0.000268175598125502, 0.00106065506580148, 0.00326704760457197, 0.00783723978282210, 0.0146418915416844, 0.0213038264869216, 0.0241403980280593, 0.0213038264869216, 0.0146418915416844, 0.00783723978282210, 0.00326704760457197, 0.00106065506580148, 0.000268175598125502, 5.28069062757794e-05,
+					 7.68335952638070e-05, 0.000390193192882707, 0.00154324401461245, 0.00475352621580118, 0.0114031165983104, 0.0213038264869216, 0.0309968846369868, 0.0351240718762925, 0.0309968846369868, 0.0213038264869216, 0.0114031165983104, 0.00475352621580118, 0.00154324401461245, 0.000390193192882707, 7.68335952638070e-05,
+					 8.70638696167456e-05, 0.000442146812912245, 0.00174872456786274, 0.00538645087804772, 0.0129214239335160, 0.0241403980280593, 0.0351240718762925, 0.0398007877120288, 0.0351240718762925, 0.0241403980280593, 0.0129214239335160, 0.00538645087804772, 0.00174872456786274, 0.000442146812912245, 8.70638696167456e-05,
+					 7.68335952638070e-05, 0.000390193192882707, 0.00154324401461245, 0.00475352621580118, 0.0114031165983104, 0.0213038264869216, 0.0309968846369868, 0.0351240718762925, 0.0309968846369868, 0.0213038264869216, 0.0114031165983104, 0.00475352621580118, 0.00154324401461245, 0.000390193192882707, 7.68335952638070e-05,
+					 5.28069062757794e-05, 0.000268175598125502, 0.00106065506580148, 0.00326704760457197, 0.00783723978282210, 0.0146418915416844, 0.0213038264869216, 0.0241403980280593, 0.0213038264869216, 0.0146418915416844, 0.00783723978282210, 0.00326704760457197, 0.00106065506580148, 0.000268175598125502, 5.28069062757794e-05,
+					 2.82655000888421e-05, 0.000143544053746591, 0.000567727745686803, 0.00174872456786274, 0.00419497216179922, 0.00783723978282210, 0.0114031165983104, 0.0129214239335160, 0.0114031165983104, 0.00783723978282210, 0.00419497216179922, 0.00174872456786274, 0.000567727745686803, 0.000143544053746591, 2.82655000888421e-05,
+					 1.17828134542578e-05, 5.98380641576443e-05, 0.000236664134694527, 0.000728976855220689, 0.00174872456786274, 0.00326704760457197, 0.00475352621580118, 0.00538645087804772, 0.00475352621580118, 0.00326704760457197, 0.00174872456786274, 0.000728976855220689, 0.000236664134694527, 5.98380641576443e-05, 1.17828134542578e-05,
+					 3.82531946034795e-06, 1.94265751707265e-05, 7.68335952638070e-05, 0.000236664134694527, 0.000567727745686803, 0.00106065506580148, 0.00154324401461245, 0.00174872456786274, 0.00154324401461245, 0.00106065506580148, 0.000567727745686803, 0.000236664134694527, 7.68335952638070e-05, 1.94265751707265e-05, 3.82531946034795e-06,
+					 9.67192226178406e-07, 4.91180741403700e-06, 1.94265751707265e-05, 5.98380641576443e-05, 0.000143544053746591, 0.000268175598125502, 0.000390193192882707, 0.000442146812912245, 0.000390193192882707, 0.000268175598125502, 0.000143544053746591, 5.98380641576443e-05, 1.94265751707265e-05, 4.91180741403700e-06, 9.67192226178406e-07,
+					 1.90451441501264e-07, 9.67192226178406e-07, 3.82531946034795e-06, 1.17828134542578e-05, 2.82655000888421e-05, 5.28069062757794e-05, 7.68335952638070e-05, 8.70638696167456e-05, 7.68335952638070e-05, 5.28069062757794e-05, 2.82655000888421e-05, 1.17828134542578e-05, 3.82531946034795e-06, 9.67192226178406e-07, 1.90451441501264e-07);
+
+		cv::Mat dx = (cv::Mat_<PixelType>(1, 3) << -1, 0, 1);
+		cv::Mat dy;
+		cv::transpose(dx, dy);
+
+		auto ttt1 = tic();
+		cv::Ptr<cv::cuda::Filter> filter_dx;
+		filter(dx, filter_dx);
+		cv::Ptr<cv::cuda::Filter> filter_dy;
+		filter(dy, filter_dy);
+		cv::Ptr<cv::cuda::Filter> filter_G;
+		filter(G, filter_G);
+
+		cv::Mat ones_mat = cv::Mat::ones(image.size(), MatType);
+		cv::Mat zeros_mat = cv::Mat::zeros(image.size(), MatType);
+		cv::cuda::GpuMat g_ones(ones_mat), g_zeros_mat(zeros_mat);
+
+		cv::cuda::GpuMat g_gray_image(gray_image), g_gaussian_image;
+		filter_G->apply(g_gray_image, g_gaussian_image);
+		toc(ttt1, "ttt1");
+
+		auto ttt21 = tic();
+		// first derivative
+		cv::cuda::GpuMat g_Ix, g_Iy, g_I_45, g_I_n45;
+		filter_dx->apply(g_gaussian_image, g_Ix);
+		filter_dy->apply(g_gaussian_image, g_Iy);
+		toc(ttt21, "ttt21");
+		auto ttt22 = tic();
+		cv::cuda::GpuMat temp1, temp2;
+		cv::cuda::multiply(g_Ix, g_ones, temp1, cos(PI / 4));
+		cv::cuda::multiply(g_Iy, g_ones, temp2, sin(PI / 4));
+		cv::cuda::add(temp1, temp2, g_I_45);
+		cv::cuda::subtract(temp1, temp2, g_I_n45);
+		toc(ttt22, "ttt22");
+
+		auto ttt3 = tic();
+		// second derivative
+		cv::cuda::GpuMat g_Ixy, g_I_45_x, g_I_45_y, g_I_45_45;
+		filter_dy->apply(g_Ix, g_Ixy);
+		filter_dx->apply(g_I_45, g_I_45_x);
+		filter_dy->apply(g_I_45, g_I_45_y);
+		cv::cuda::multiply(g_I_45_x, g_ones, temp1, cos(-PI / 4));
+		cv::cuda::multiply(g_I_45_y, g_ones, temp2, sin(-PI / 4));
+		cv::cuda::add(temp1, temp2, g_I_45_45);
+		toc(ttt3, "ttt3");
+
+		auto ttt4 = tic();
+		// cmax
+		auto sigma_2 = pow(sigma, 2), sigma_n15 = -1.5 * sigma;
+		cv::cuda::GpuMat g_cxy, g_c45, g_cmax;
+		cv::cuda::abs(g_I_45, temp1);
+		cv::cuda::abs(g_I_n45, temp2);
+		cv::cuda::add(temp1, temp2, temp1);
+		cv::cuda::multiply(temp1, g_ones, temp1, sigma_n15);
+		cv::cuda::abs(g_Ixy, temp2);
+		cv::cuda::scaleAdd(temp2, sigma_2, temp1, g_cxy);
+
+		cv::cuda::abs(g_Ix, temp1);
+		cv::cuda::abs(g_Iy, temp2);
+		cv::cuda::add(temp1, temp2, temp1);
+		cv::cuda::multiply(temp1, g_ones, temp1, sigma_n15);
+		cv::cuda::abs(g_I_45_45, temp2);
+		cv::cuda::scaleAdd(temp2, sigma_2, temp1, g_c45);
+
+		cv::cuda::max(g_cxy, g_c45, g_cmax);
+		cv::cuda::max(g_cmax, g_zeros_mat, g_zeros_mat);
+		toc(ttt4, "ttt4");
+
+        auto ttt6 = tic();
+		// download
+		cv::Mat Ix, Iy, cmax;
+		g_Ix.download(Ix);
+		g_Iy.download(Iy);
+		g_cmax.download(cmax);
+		toc(ttt6, "ttt6");
+
+		return {Ix, Iy, cmax};
+	}
+
+	Maximas nonMaximumSuppression(const cv::Mat &img, int n = 8, PixelType tau = 0.06f, int margin = 8)
 	{
 		auto width = img.cols;
 		auto height = img.rows;
@@ -174,15 +298,15 @@ private:
 
 				bool failed = false;
 				for (int i2 = max_i - n;
-					i2 <= std::min(max_i + n, width - margin - 1);
-					i2++)
+					 i2 <= std::min(max_i + n, width - margin - 1);
+					 i2++)
 				{
 					for (int j2 = max_j - n;
-						j2 <= std::min(max_j + n, height - margin - 1);
-						j2++)
+						 j2 <= std::min(max_j + n, height - margin - 1);
+						 j2++)
 					{
 						if (img.ptr<PixelType>(j2)[i2] > max_val &&
-							(i2<i || i2>i + n || j2<j || j2>j + n))
+							(i2 < i || i2 > i + n || j2 < j || j2 > j + n))
 						{
 							failed = true;
 							break;
@@ -202,7 +326,7 @@ private:
 		return maxima;
 	}
 
-	std::tuple<Maximas, Angles> refineCorners(const Maximas& corners, const cv::Mat& I_angle, const cv::Mat& I_weight)
+	std::tuple<Maximas, Angles> refineCorners(const Maximas &corners, const cv::Mat &I_angle, const cv::Mat &I_weight)
 	{
 		auto r = 6;
 		auto width = gray_image.cols, height = gray_image.rows;
@@ -223,10 +347,10 @@ private:
 			refined_corners.emplace_back(corners.at(i));
 		}
 
-		return { refined_corners, angles };
+		return {refined_corners, angles};
 	}
 
-	Angle edgeOrientation(const cv::Mat& img_angle, const cv::Mat& img_weight)
+	Angle edgeOrientation(const cv::Mat &img_angle, const cv::Mat &img_weight)
 	{
 		const auto BIN_NUM = 32;
 		using Histogram = std::array<PixelType, BIN_NUM>;
@@ -239,27 +363,25 @@ private:
 		{
 			for (int v = 0; v < img_angle.rows; ++v)
 			{
-				auto val = [](PixelType angle)
-				{
+				auto val = [](PixelType angle) {
 					angle += PI / 2;
-					while (angle > PI) angle -= PI;
+					while (angle > PI)
+						angle -= PI;
 					return angle;
 				}(img_angle.ptr<PixelType>(v)[u]);
 
 				auto bin = std::max(
 					std::min(
 						static_cast<int>(floor(val / PI * BIN_NUM)),
-						BIN_NUM - 1
-					), 0
-				);
+						BIN_NUM - 1),
+					0);
 
 				angle_hist.at(bin) += img_weight.ptr<PixelType>(v)[u];
 			}
 		}
 
 		auto findModesMeanShift = [&angle_hist, &BIN_NUM](int sigma)
-			-> std::tuple<Mode, Histogram>
-		{
+			-> std::tuple<Mode, Histogram> {
 			Histogram hist_smoothed = {};
 			Mode modes;
 
@@ -272,16 +394,15 @@ private:
 				}
 			}
 
-			auto is_all_zeros = [&hist_smoothed]()
-			{
-				for (const auto& hist : hist_smoothed)
+			auto is_all_zeros = [&hist_smoothed]() {
+				for (const auto &hist : hist_smoothed)
 					if (abs(hist - hist_smoothed.front()) >= 1e-5)
 						return false;
 
 				return true;
 			};
 			if (is_all_zeros())
-				return { modes, hist_smoothed };
+				return {modes, hist_smoothed};
 
 			for (int i = 0; i < BIN_NUM; ++i)
 			{
@@ -294,14 +415,16 @@ private:
 					auto h1 = hist_smoothed.at(j1);
 					auto h2 = hist_smoothed.at(j2);
 
-					if (h1 >= h0 && h1 >= h2) j = j1;
-					else if (h2 > h0&& h2 > h1) j = j2;
-					else break;
+					if (h1 >= h0 && h1 >= h2)
+						j = j1;
+					else if (h2 > h0 && h2 > h1)
+						j = j2;
+					else
+						break;
 				}
 
-				auto contains = [&modes](int j)
-				{
-					for (const auto& e : modes)
+				auto contains = [&modes](int j) {
+					for (const auto &e : modes)
 						if (e.first == j)
 							return true;
 
@@ -314,34 +437,38 @@ private:
 			}
 
 			std::sort(modes.begin(), modes.end(),
-				[](const auto& lhs, const auto& rhs) { return lhs.second > rhs.second; });
+					  [](const auto &lhs, const auto &rhs) { return lhs.second > rhs.second; });
 
-			return { modes, hist_smoothed };
+			return {modes, hist_smoothed};
 		};
 		auto [modes, hist_smoothed] = findModesMeanShift(1);
 
 		if (modes.size() <= 1)
-			return { Orientation(0, 0), Orientation(0, 0), 0 };
+			return {Orientation(0, 0), Orientation(0, 0), 0};
 
-		struct SelectedModes { int id; PixelType angle; };
+		struct SelectedModes
+		{
+			int id;
+			PixelType angle;
+		};
 		std::array<SelectedModes, 2> selected_mode;
 		for (int i = 0; i < 2; ++i)
-			selected_mode.at(i) = { modes.at(i).first, modes.at(i).first * PI / BIN_NUM };
+			selected_mode.at(i) = {modes.at(i).first, modes.at(i).first * PI / BIN_NUM};
 		std::sort(selected_mode.begin(), selected_mode.end(),
-			[](const auto& lhs, const auto& rhs) { return lhs.angle < rhs.angle; });
+				  [](const auto &lhs, const auto &rhs) { return lhs.angle < rhs.angle; });
 
 		auto delta_angle = std::min(
 			selected_mode.at(1).angle - selected_mode.at(0).angle,
 			selected_mode.at(1).angle - selected_mode.at(0).angle + PI);
 		if (delta_angle <= 0.5f)
-			return { Orientation(0, 0), Orientation(0, 0), 0 };
+			return {Orientation(0, 0), Orientation(0, 0), 0};
 
-		return { Orientation(cos(selected_mode.at(0).angle),sin(selected_mode.at(0).angle)),
-			Orientation(cos(selected_mode.at(1).angle),sin(selected_mode.at(1).angle)),
-			(selected_mode.at(0).angle + selected_mode.at(1).angle) / 2 };
+		return {Orientation(cos(selected_mode.at(0).angle), sin(selected_mode.at(0).angle)),
+				Orientation(cos(selected_mode.at(1).angle), sin(selected_mode.at(1).angle)),
+				(selected_mode.at(0).angle + selected_mode.at(1).angle) / 2};
 	}
 
-	Corners subPixelLocation(const cv::Mat& cmax, const Maximas& corners, const Angles& angles)
+	Corners subPixelLocation(const cv::Mat &cmax, const Maximas &corners, const Angles &angles)
 	{
 		Corners res;
 		auto [half_patch_size, X] = patch_para();
@@ -349,9 +476,8 @@ private:
 		//for (const auto& _point : corners)
 		for (int id = 0; id < corners.size(); ++id)
 		{
-			auto& point = corners.at(id).corner;
-			auto subPixelLocationImpl = [&cmax, &point](int half_patch_size, const Eigen::MatrixXf& X)
-			{
+			auto &point = corners.at(id).corner;
+			auto subPixelLocationImpl = [&cmax, &point](int half_patch_size, const Eigen::MatrixXf &X) {
 				if (point.x < half_patch_size ||
 					point.y < half_patch_size ||
 					point.x > cmax.cols - half_patch_size - 1 ||
@@ -363,7 +489,8 @@ private:
 				auto patch = cmax(
 					cv::Range(point.y - half_patch_size, point.y + half_patch_size + 1),
 					cv::Range(point.x - half_patch_size, point.x + half_patch_size + 1));
-				Eigen::MatrixXf e_patch; cv::cv2eigen(patch, e_patch);
+				Eigen::MatrixXf e_patch;
+				cv::cv2eigen(patch, e_patch);
 				Eigen::Map<Eigen::RowVectorXf> v_patch(e_patch.data(), e_patch.size());
 				auto beta = X * v_patch.transpose();
 				auto A = beta(0), B = beta(1), C = beta(2), D = beta(3), E = beta(4);
@@ -396,24 +523,24 @@ private:
 			0.0114795918367347, 0.00765306122448980, 0.00382653061224490, 0, -0.00382653061224490, -0.00765306122448980, -0.0114795918367347, 0.00765306122448980, 0.00510204081632653, 0.00255102040816327, 0, -0.00255102040816327, -0.00510204081632653, -0.00765306122448980, 0.00382653061224490, 0.00255102040816327, 0.00127551020408163, 0, -0.00127551020408163, -0.00255102040816327, -0.00382653061224490, 0, 0, 0, 0, 0, 0, 0, -0.00382653061224490, -0.00255102040816327, -0.00127551020408163, 0, 0.00127551020408163, 0.00255102040816327, 0.00382653061224490, -0.00765306122448980, -0.00510204081632653, -0.00255102040816327, 0, 0.00255102040816327, 0.00510204081632653, 0.00765306122448980, -0.0114795918367347, -0.00765306122448980, -0.00382653061224490, 0, 0.00382653061224490, 0.00765306122448980, 0.0114795918367347,
 			-0.0476190476190476, -0.0136054421768707, 0.00680272108843540, 0.0136054421768708, 0.00680272108843540, -0.0136054421768707, -0.0476190476190476, -0.0136054421768708, 0.0204081632653061, 0.0408163265306123, 0.0476190476190476, 0.0408163265306123, 0.0204081632653061, -0.0136054421768708, 0.00680272108843535, 0.0408163265306122, 0.0612244897959183, 0.0680272108843537, 0.0612244897959183, 0.0408163265306122, 0.00680272108843535, 0.0136054421768707, 0.0476190476190476, 0.0680272108843537, 0.0748299319727891, 0.0680272108843537, 0.0476190476190476, 0.0136054421768707, 0.00680272108843535, 0.0408163265306122, 0.0612244897959183, 0.0680272108843537, 0.0612244897959183, 0.0408163265306122, 0.00680272108843535, -0.0136054421768708, 0.0204081632653061, 0.0408163265306123, 0.0476190476190476, 0.0408163265306123, 0.0204081632653061, -0.0136054421768708, -0.0476190476190476, -0.0136054421768707, 0.00680272108843540, 0.0136054421768708, 0.00680272108843540, -0.0136054421768707, -0.0476190476190476;
 
-		return { half_patch_size , X };
+		return {half_patch_size, X};
 	}
 
-	ScoreCorners scoreCorners(const cv::Mat img_angle, const cv::Mat img_weight, const Corners& corners)
+	ScoreCorners scoreCorners(const cv::Mat img_angle, const cv::Mat img_weight, const Corners &corners)
 	{
 		auto width = gray_image.cols, height = gray_image.rows;
-		std::array<int, 3> radius = { 4, 8, 12};
+		std::array<int, 3> radius = {4, 8, 12};
 
 		ScoreCorners scored_corners;
-		for (const auto& corner : corners)
+		for (const auto &corner : corners)
 		{
 			auto x = round(corner.point.x);
 			auto y = round(corner.point.y);
 
 			std::vector<PixelType> scores;
-			for (const auto& r : radius)
+			for (const auto &r : radius)
 			{
-				if (x > r&& x < width - r && y > r&& y < height - r)
+				if (x > r && x < width - r && y > r && y < height - r)
 				{
 					auto x_range = cv::Range(y - r, y + r + 1);
 					auto y_range = cv::Range(x - r, x + r + 1);
@@ -423,19 +550,19 @@ private:
 					scores.push_back(cornerCorrelationScore(img_sub, img_weight_sub, corner.angle.v1, corner.angle.v2));
 				}
 			}
-			ScoreCorner sc = { corner, *std::max_element(scores.begin(), scores.end()) };
+			ScoreCorner sc = {corner, *std::max_element(scores.begin(), scores.end())};
 			scored_corners.emplace_back(sc);
 		}
 
 		return scored_corners;
 	}
 
-	PixelType cornerCorrelationScore(const cv::Mat& img, const cv::Mat& img_weight, const Orientation& v1, const Orientation& v2)
+	PixelType cornerCorrelationScore(const cv::Mat &img, const cv::Mat &img_weight, const Orientation &v1, const Orientation &v2)
 	{
 		auto imgWeight = img_weight;
 
 		//center
-		int c[] = { imgWeight.cols / 2, imgWeight.cols / 2 };
+		int c[] = {imgWeight.cols / 2, imgWeight.cols / 2};
 
 		//compute gradient filter kernel(bandwith = 3 px)
 		cv::Mat img_filter = cv::Mat::ones(imgWeight.size(), imgWeight.type());
@@ -446,9 +573,9 @@ private:
 			{
 				cv::Point2f p1 = cv::Point2f(i - c[0], j - c[1]);
 				cv::Point2f p2 = cv::Point2f(p1.x * v1.x() * v1.x() + p1.y * v1.x() * v1.y(),
-					p1.x * v1.x() * v1.y() + p1.y * v1.y() * v1.y());
+											 p1.x * v1.x() * v1.y() + p1.y * v1.y() * v1.y());
 				cv::Point2f p3 = cv::Point2f(p1.x * v2.x() * v2.x() + p1.y * v2.x() * v2.y(),
-					p1.x * v2.x() * v2.y() + p1.y * v2.y() * v2.y());
+											 p1.x * v2.x() * v2.y() + p1.y * v2.y() * v2.y());
 				float norm1 = sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y));
 				float norm2 = sqrt((p1.x - p3.x) * (p1.x - p3.x) + (p1.y - p3.y) * (p1.y - p3.y));
 				if (norm1 <= 1.5 || norm2 <= 1.5)
@@ -493,7 +620,7 @@ private:
 
 		//create intensity filter kernel
 		cv::Mat kernelA, kernelB, kernelC, kernelD;
-		createkernel(atan2(v1.y(), v1.x()), atan2(v2.y(), v2.x()), c[0], kernelA, kernelB, kernelC, kernelD);//1.1 ²úÉúËÄÖÖºË
+		createkernel(atan2(v1.y(), v1.x()), atan2(v2.y(), v2.x()), c[0], kernelA, kernelB, kernelC, kernelD); //1.1 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Öºï¿½
 
 		//checkerboard responses
 		float a1, a2, b1, b2;
@@ -518,7 +645,7 @@ private:
 		return score_gradient * score_intensity;
 	}
 
-	void createkernel(PixelType angle1, PixelType angle2, int kernelSize, cv::Mat& kernelA, cv::Mat& kernelB, cv::Mat& kernelC, cv::Mat& kernelD)
+	void createkernel(PixelType angle1, PixelType angle2, int kernelSize, cv::Mat &kernelA, cv::Mat &kernelB, cv::Mat &kernelC, cv::Mat &kernelD)
 	{
 		int width = (int)kernelSize * 2 + 1;
 		int height = (int)kernelSize * 2 + 1;
@@ -527,41 +654,49 @@ private:
 		kernelC = cv::Mat::zeros(height, width, MatType);
 		kernelD = cv::Mat::zeros(height, width, MatType);
 
-		for (int u = 0; u < width; ++u) {
-			for (int v = 0; v < height; ++v) {
-				PixelType vec[] = { u - kernelSize, v - kernelSize };//Ïàµ±ÓÚ½«×ø±êÔ­µãÒÆ¶¯µ½ºËÖÐÐÄ
-				PixelType dis = std::sqrt(vec[0] * vec[0] + vec[1] * vec[1]);//Ïàµ±ÓÚ¼ÆËãµ½ÖÐÐÄµÄ¾àÀë
-				PixelType side1 = vec[0] * (-sin(angle1)) + vec[1] * cos(angle1);//Ïàµ±ÓÚ½«×ø±êÔ­µãÒÆ¶¯ºóµÄºË½øÐÐÐý×ª£¬ÒÔ´Ë²úÉúËÄÖÖºË
-				PixelType side2 = vec[0] * (-sin(angle2)) + vec[1] * cos(angle2);//X=X0*cos+Y0*sin;Y=Y0*cos-X0*sin
-				if (side1 <= -0.1 && side2 <= -0.1) {
+		for (int u = 0; u < width; ++u)
+		{
+			for (int v = 0; v < height; ++v)
+			{
+				PixelType vec[] = {u - kernelSize, v - kernelSize};				  //ï¿½àµ±ï¿½Ú½ï¿½ï¿½ï¿½ï¿½ï¿½Ô­ï¿½ï¿½ï¿½Æ¶ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+				PixelType dis = std::sqrt(vec[0] * vec[0] + vec[1] * vec[1]);	 //ï¿½àµ±ï¿½Ú¼ï¿½ï¿½ãµ½ï¿½ï¿½ï¿½ÄµÄ¾ï¿½ï¿½ï¿½
+				PixelType side1 = vec[0] * (-sin(angle1)) + vec[1] * cos(angle1); //ï¿½àµ±ï¿½Ú½ï¿½ï¿½ï¿½ï¿½ï¿½Ô­ï¿½ï¿½ï¿½Æ¶ï¿½ï¿½ï¿½ÄºË½ï¿½ï¿½ï¿½ï¿½ï¿½×ªï¿½ï¿½ï¿½Ô´Ë²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Öºï¿½
+				PixelType side2 = vec[0] * (-sin(angle2)) + vec[1] * cos(angle2); //X=X0*cos+Y0*sin;Y=Y0*cos-X0*sin
+				if (side1 <= -0.1 && side2 <= -0.1)
+				{
 					kernelA.ptr<PixelType>(v)[u] = normpdf(dis, 0, kernelSize / 2);
 				}
-				if (side1 >= 0.1 && side2 >= 0.1) {
+				if (side1 >= 0.1 && side2 >= 0.1)
+				{
 					kernelB.ptr<PixelType>(v)[u] = normpdf(dis, 0, kernelSize / 2);
 				}
-				if (side1 <= -0.1 && side2 >= 0.1) {
+				if (side1 <= -0.1 && side2 >= 0.1)
+				{
 					kernelC.ptr<PixelType>(v)[u] = normpdf(dis, 0, kernelSize / 2);
 				}
-				if (side1 >= 0.1 && side2 <= -0.1) {
+				if (side1 >= 0.1 && side2 <= -0.1)
+				{
 					kernelD.ptr<PixelType>(v)[u] = normpdf(dis, 0, kernelSize / 2);
 				}
 			}
 		}
 		//std::cout << "kernelA:" << kernelA << endl << "kernelB:" << kernelB << endl
 		//	<< "kernelC:" << kernelC<< endl << "kernelD:" << kernelD << endl;
-		//¹éÒ»»¯
+		//ï¿½ï¿½Ò»ï¿½ï¿½
 		kernelA = kernelA / cv::sum(kernelA)[0];
 		kernelB = kernelB / cv::sum(kernelB)[0];
 		kernelC = kernelC / cv::sum(kernelC)[0];
 		kernelD = kernelD / cv::sum(kernelD)[0];
 	}
 
-	void eraseLowScoreCorners(ScoreCorners& scored_corners, PixelType threshold)
+	void eraseLowScoreCorners(ScoreCorners &scored_corners, PixelType threshold)
 	{
 		for (auto it = scored_corners.begin(); it != scored_corners.end();)
 		{
-			if (it->score < threshold) it = scored_corners.erase(it);
-			else ++it;
+			if (it->score < threshold)
+				it = scored_corners.erase(it);
+			else
+				++it;
 		}
 	}
 
@@ -569,4 +704,3 @@ private:
 	const cv::Mat image;
 	cv::Mat gray_image;
 };
-

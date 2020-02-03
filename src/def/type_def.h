@@ -5,7 +5,7 @@
 
 using PixelType = float;
 const PixelType PI = CV_PI;
-const int MatType = CV_32F;
+const int MatType = CV_32FC1;
 
 
 struct Maxima
