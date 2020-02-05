@@ -2,30 +2,33 @@
 #include "../def/type_def.h"
 #include "../def/macro_def.h"
 
+
+
 class Detector
 {
 public:
 	Detector(const cv::Size &size);
 
-	ScoreCorners findCorners(const cv::Mat &image);
-	void showResult(const ScoreCorners &corners, const cv::Mat &image);
+	Corners findCorners(const cv::Mat &image);
+	void showResult(const Corners &corners, const cv::Mat &image);
 
 private:
 	/* normal */
 	cv::Mat convertToGray(const cv::Mat &image);
-	std::tuple<cv::Mat, cv::Mat, cv::Mat> secondDerivCornerMetric(const cv::Mat &gray_image);
-	Maximas nonMaximumSuppression(const cv::Mat &img, int n = 8, PixelType tau = 0.06f, int margin = 8);
-	std::tuple<Maximas, Angles> refineCorners(const Maximas &corners, const cv::Mat &I_angle, const cv::Mat &I_weight);
-	Angle edgeOrientation(const cv::Mat &img_angle, const cv::Mat &img_weight);
-	Corners subPixelLocation(const cv::Mat &cmax, const Maximas &corners, const Angles &angles);
-	ScoreCorners scoreCorners(const cv::Mat &gray_image, const cv::Mat img_angle, const cv::Mat img_weight, const Corners &corners);
-	PixelType cornerCorrelationScore(const cv::Mat &img, const cv::Mat &img_weight, const Orientation &v1, const Orientation &v2);
-	void createkernel(PixelType angle1, PixelType angle2, int kernelSize, cv::Mat &kernelA, cv::Mat &kernelB, cv::Mat &kernelC, cv::Mat &kernelD);
-	void eraseLowScoreCorners(ScoreCorners &scored_corners, PixelType threshold);
+	std::tuple<cv::Mat, cv::Mat, cv::Mat> secondDerivCornerMetric();
+	Maximas nonMaximumSuppression(const cv::Mat &img, int n = 8, int margin = 8, PixelType tau = 0.06f);
+	std::tuple<Corners, bool> detectCornersOnMarker(const Maximas &corners);
+	std::tuple<CornerTemplate, CornerTemplate, int> findFirstSecondCorners(const cv::Point& point);
+	Corner subPixelLocation(const cv::Point& point);
+	std::tuple<PixelType, PixelType> findEdgeAngles(const Corner& point);
+	std::tuple<PixelType, PixelType> edgeOrientation(const cv::Mat& img_angle, const cv::Mat& img_weight);
+	PixelType calcBolicCorrelation(const Corner& point, int width, PixelType theta);
+	Corner findNextCorner(const CornerTemplate& current, int dir);
+	CornerTemplate predictNextCorner(const CornerTemplate& current, int dir);
 
 #ifdef USE_CUDA
 	void initCuda(const cv::Size &size);
-	std::tuple<cv::Mat, cv::Mat, cv::Mat> secondDerivCornerMetricCuda(const cv::Mat &gray_image);
+	std::tuple<cv::Mat, cv::Mat, cv::Mat> secondDerivCornerMetricCuda();
 #endif
 
 	/* others */
@@ -33,9 +36,16 @@ private:
 	Eigen::MatrixXf calcPatchX();
 
 private:
-	const int sigma;
-	const int half_patch_size;
-	const Eigen::MatrixXf patch_X;
+	const int SIGMA;
+	const int HALF_PATCH_SIZE;
+	const Eigen::MatrixXf PATCH_X;
+	const int WIDTH_MIN;
+	const PixelType CORR_THRESHOLD;
+
+	cv::Mat gray_image;
+	cv::Mat I_angle;
+	cv::Mat I_weight;
+	cv::Mat cmax;
 
 #ifdef USE_CUDA
 	cv::Ptr<cv::cuda::Filter> filter_dx, filter_dy, filter_G;

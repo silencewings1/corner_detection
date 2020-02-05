@@ -1,3 +1,3 @@
 #pragma once
 
-#define USE_CUDA
+// #define USE_CUDA
