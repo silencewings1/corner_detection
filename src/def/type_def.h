@@ -33,3 +33,10 @@ struct CornerTemplate
 	PixelType angle;
 	PixelType corr;
 };
+using CornersTemplate = std::vector<CornerTemplate>;
+
+struct DetectRectangle
+{
+	cv::Range range_x;
+	cv::Range range_y;
+};

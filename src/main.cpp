@@ -31,25 +31,50 @@ void test_refy()
 	waitKey(0);
 }
 
-void test_whole()
+void test_image()
 {
-	cv::String image_name = "../../imgs_1g3p_4_line_60mm/left/left_1.png";
-	cv::Mat image = imread(image_name);
+	String image_name = "../../imgs_1g3p_4_line_60mm/left/left_1_rectified.png";
+	Mat image = imread(image_name);
 	if (!image.data)
 	{
 		printf(" No image data \n ");
 		return;
 	}
 
-	Rectifier rectifier(cv::Size(1920, 1080));
-	auto t0 = tic();
-	auto img_rectified = rectifier.rectify(image, Rectifier::LEFT);
-	toc(t0, "t0");
+	Detector detector(image.size());
+	auto total = tic();
+	auto corners = detector.process(image);
+	toc(total, "total");
+	detector.showResult(corners, image);
 
-	cv::imshow("img_rectified", img_rectified);
+	waitKey(0);
+}
 
-	Detector detector(img_rectified.size());
-	detector.findCorners(img_rectified);
+void test_video()
+{
+	VideoCapture capture;
+	capture.open("../../video20200120/WIN_20200120_11_39_46_Pro.mp4");
+	if (!capture.isOpened())
+	{
+		printf("can not open ...\n");
+		return ;
+	}
+
+	Mat frame;
+	while (capture.read(frame))
+	{
+		Detector detector(frame.size());
+		auto total = tic();
+		auto corners = detector.process(frame);
+		toc(total, "total");
+		detector.showResult(corners, frame);
+
+		auto key = waitKey(1);
+		if (key == 'q' || key == 'Q')
+			break;
+	}
+
+	capture.release();
 }
 
 int main()
@@ -58,20 +83,6 @@ int main()
 	//cv::cuda::printCudaDeviceInfo(cv::cuda::getDevice());
 	////////////////
 
-	String image_name = "../../imgs_1g3p_4_line_60mm/left/left_1_rectified.png";
-	Mat image = imread(image_name);
-	if (!image.data)
-	{
-		printf(" No image data \n ");
-		return -1;
-	}
-
-	Detector detector(image.size());
-	auto total = tic();
-	auto corners = detector.findCorners(image);
-	toc(total, "total");
-	detector.showResult(corners, image);
-
-	waitKey(0);
+	test_video();
 	return 0;
 }

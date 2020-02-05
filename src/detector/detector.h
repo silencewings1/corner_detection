@@ -9,15 +9,18 @@ class Detector
 public:
 	Detector(const cv::Size &size);
 
-	Corners findCorners(const cv::Mat &image);
+	Corners process(const cv::Mat& image);
 	void showResult(const Corners &corners, const cv::Mat &image);
 
 private:
-	/* normal */
+	/* detect in one image */
+	std::tuple<CornersTemplate, bool> detectCorners(const cv::Mat& image);
+
+	/* steps */
 	cv::Mat convertToGray(const cv::Mat &image);
 	std::tuple<cv::Mat, cv::Mat, cv::Mat> secondDerivCornerMetric();
 	Maximas nonMaximumSuppression(const cv::Mat &img, int n = 8, int margin = 8, PixelType tau = 0.06f);
-	std::tuple<Corners, bool> detectCornersOnMarker(const Maximas &corners);
+	std::tuple<CornersTemplate, bool> detectCornersOnMarker(const Maximas &corners);
 	std::tuple<CornerTemplate, CornerTemplate, int> findFirstSecondCorners(const cv::Point& point);
 	Corner subPixelLocation(const cv::Point& point);
 	std::tuple<PixelType, PixelType> findEdgeAngles(const Corner& point);
@@ -41,6 +44,8 @@ private:
 	const Eigen::MatrixXf PATCH_X;
 	const int WIDTH_MIN;
 	const PixelType CORR_THRESHOLD;
+
+	DetectRectangle rect;
 
 	cv::Mat gray_image;
 	cv::Mat I_angle;

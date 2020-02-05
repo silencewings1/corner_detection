@@ -26,13 +26,50 @@ Detector::Detector(const cv::Size& size)
 	, PATCH_X(calcPatchX())
 	, WIDTH_MIN(10)
 	, CORR_THRESHOLD(0.7f)
+	, rect{ cv::Range(0, size.width), cv::Range(0, size.height) }
 {
 #ifdef USE_CUDA
 	initCuda(size);
 #endif
 }
 
-Corners Detector::findCorners(const cv::Mat& image)
+Corners Detector::process(const cv::Mat& image)
+{
+	auto image_roi = image(rect.range_y, rect.range_x);
+
+	//cv::imshow("image_roi", image_roi);
+	auto [corners, is_vaild] = detectCorners(image_roi);
+
+	if (is_vaild)
+	{
+		PixelType width_sum = 0;
+		Corner point_sum(0, 0);
+		for (const auto& corner : corners)
+		{
+			point_sum += corner.point;
+			width_sum += corner.width;
+		}
+		auto px_avg = point_sum.x / corners.size();
+		auto py_avg = point_sum.y / corners.size();
+		auto width_avg = width_sum / corners.size();
+
+		auto rect_side = round(width_avg * 20);
+		rect.range_x = cv::Range(
+			std::max(int(px_avg - rect_side / 2), 0),
+			std::min(int(px_avg + rect_side / 2), image.cols) + 1);
+		rect.range_y = cv::Range(
+			std::max(int(py_avg - rect_side / 2), 0),
+			std::min(int(py_avg + rect_side / 2), image.rows) + 1);
+	}
+
+	Corners res;
+	for (auto&& p : corners)
+		res.emplace_back(p.point);
+
+	return res;
+}
+
+std::tuple<CornersTemplate, bool> Detector::detectCorners(const cv::Mat& image)
 {
 	auto t0 = tic();
 	gray_image = convertToGray(image);
@@ -56,7 +93,7 @@ Corners Detector::findCorners(const cv::Mat& image)
 	auto [corners_on_marker, is_vaild] = detectCornersOnMarker(corners);
 	toc(t3, "t3:");
 
-	return corners_on_marker;
+	return { corners_on_marker, is_vaild };
 }
 
 void Detector::showResult(const Corners& corners, const cv::Mat& image)
@@ -76,7 +113,7 @@ void Detector::showResult(const Corners& corners, const cv::Mat& image)
 		//cv::putText(image, std::to_string(sc.score), sc.corner.point, cv::FONT_HERSHEY_COMPLEX, 0.4, cv::Scalar(0, 255, 255));
 	}
 	cv::imshow("corners", image);
-	std::cout << "corners size: " << corners.size() << std::endl;
+	// std::cout << "corners size: " << corners.size() << std::endl;
 }
 
 void Detector::dump(const cv::String& name, const cv::Mat& mat)
@@ -224,16 +261,16 @@ Eigen::MatrixXf Detector::calcPatchX()
 	return (XX.transpose() * XX).inverse() * XX.transpose();
 }
 
-std::tuple<Corners, bool> Detector::detectCornersOnMarker(const Maximas& corners)
+std::tuple<CornersTemplate, bool> Detector::detectCornersOnMarker(const Maximas& corners)
 {
-	Corners corners_selected;
+	CornersTemplate corners_selected;
 	for (const auto& p : corners)
 	{
 		auto [corner_first, corner_second, dir] = findFirstSecondCorners(p.corner);
 		if (dir != 0)
 		{
-			corners_selected.push_back(corner_first.point);
-			corners_selected.push_back(corner_second.point);
+			corners_selected.push_back(corner_first);
+			corners_selected.push_back(corner_second);
 
 			std::array<std::pair<int, CornerTemplate>, 2> comps = {
 				std::make_pair(dir, corner_second),
@@ -247,7 +284,7 @@ std::tuple<Corners, bool> Detector::detectCornersOnMarker(const Maximas& corners
 						break;
 
 					comp.second = corner_next;
-					corners_selected.push_back(corner_next.point);
+					corners_selected.push_back(corner_next);
 				}
 			}
 		}
