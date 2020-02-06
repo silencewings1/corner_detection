@@ -37,6 +37,17 @@ using CornersTemplate = std::vector<CornerTemplate>;
 
 struct DetectRectangle
 {
+	bool is_full(const cv::Size& size) const
+	{
+		if (range_x.start == 0 && range_x.end == size.width &&
+			range_y.start == 0 && range_y.end == size.height)
+		{
+			return true;
+		}
+
+		return false;
+	}
+
 	cv::Range range_x;
 	cv::Range range_y;
 };

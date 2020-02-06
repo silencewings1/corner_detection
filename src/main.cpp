@@ -81,7 +81,7 @@ void test_video()
 
 	capture.release();
 
-	std::cout << "***************** Average Time: " << avg_time / count << "*****************" << std::endl;
+	std::cout << "***************** Average Time: " << avg_time / count << "ms *****************" << std::endl;
 }
 
 int main()

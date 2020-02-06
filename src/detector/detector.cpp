@@ -21,7 +21,8 @@ namespace
 }
 
 Detector::Detector(const cv::Size& size)
-	: SIGMA(2)
+	: SIZE(size)
+	, SIGMA(2)
 	, HALF_PATCH_SIZE(3)
 	, PATCH_X(calcPatchX())
 	, WIDTH_MIN(10)
@@ -36,8 +37,6 @@ Detector::Detector(const cv::Size& size)
 Corners Detector::process(const cv::Mat& image)
 {
 	auto image_roi = image(rect.range_y, rect.range_x).clone();
-
-	//cv::imshow("image_roi", image_roi);
 	auto [corners, is_vaild] = detectCorners(image_roi);
 
 	if (is_vaild)
@@ -59,10 +58,15 @@ Corners Detector::process(const cv::Mat& image)
 		auto rect_side = round(width_avg * 20);
 		rect.range_x = cv::Range(
 			std::max(int(px_avg - rect_side / 2), 0),
-			std::min(int(px_avg + rect_side / 2), image.cols));
+			std::min(int(px_avg + rect_side / 2) + 1, image.cols));
 		rect.range_y = cv::Range(
 			std::max(int(py_avg - rect_side / 2), 0),
-			std::min(int(py_avg + rect_side / 2), image.rows));
+			std::min(int(py_avg + rect_side / 2) + 1, image.rows));
+	}
+	else
+	{
+		rect.range_x = cv::Range(0, SIZE.width);
+		rect.range_y = cv::Range(0, SIZE.height);
 	}
 
 	Corners res;
@@ -418,8 +422,8 @@ std::tuple<PixelType, PixelType> Detector::findEdgeAngles(const Corner& point)
 	auto width = I_angle.cols, height = I_angle.rows;
 
 	int cu = round(point.x), cv = round(point.y);
-	auto u_range = cv::Range(std::max(cv - r, 0), std::min(cv + r, height));
-	auto v_range = cv::Range(std::max(cu - r, 0), std::min(cu + r, width));
+	auto u_range = cv::Range(std::max(cv - r, 0), std::min(cv + r + 1, height));
+	auto v_range = cv::Range(std::max(cu - r, 0), std::min(cu + r + 1, width));
 
 	return edgeOrientation(I_angle(u_range, v_range), I_weight(u_range, v_range));
 }
@@ -606,8 +610,8 @@ Corner Detector::findNextCorner(const CornerTemplate& current, int dir)
 	auto side = (int)round(std::max(current.width / 3.0, WIDTH_MIN / 2.0));
 
 	auto cmax_sub = cmax(
-		cv::Range(std::max(predict_y - side, 0), std::min(predict_y + side, height)),
-		cv::Range(std::max(predict_x - side, 0), std::min(predict_x + side, width)));
+		cv::Range(std::max(predict_y - side, 0), std::min(predict_y + side + 1, height)),
+		cv::Range(std::max(predict_x - side, 0), std::min(predict_x + side + 1, width)));
 
 	cv::Point max_pos;
 	cv::minMaxLoc(cmax_sub, nullptr, nullptr, nullptr, &max_pos);

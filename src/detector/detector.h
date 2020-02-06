@@ -39,6 +39,7 @@ private:
 	Eigen::MatrixXf calcPatchX();
 
 private:
+	const cv::Size SIZE;
 	const int SIGMA;
 	const int HALF_PATCH_SIZE;
 	const Eigen::MatrixXf PATCH_X;
