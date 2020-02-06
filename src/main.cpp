@@ -4,6 +4,8 @@
 #include "detector/detector.h"
 #include "detector/rectifier.h"
 #include <iostream>
+#include <future>
+#include <memory>
 using namespace cv;
 using namespace std;
 
@@ -45,7 +47,7 @@ void test_image()
 	auto total = tic();
 	auto corners = detector.process(image);
 	toc(total, "total");
-	detector.showResult(corners, image);
+	detector.showResult("corners", corners, image);
 
 	waitKey(0);
 }
@@ -62,17 +64,18 @@ void test_video()
 
 	auto avg_time = 0.0;
 	auto count = 0;
+	cv::namedWindow("corners", WINDOW_NORMAL);
 	Mat frame;
+	cv::Size size(1920, 1080);
+	Detector detector(size);
 	while (capture.read(frame))
 	{
-		static Detector detector(frame.size());
-
 		auto total = tic();
 		auto corners = detector.process(frame);
 		avg_time += toc(total, "total");
 		++count;
 
-		detector.showResult(corners, frame);
+		detector.showResult("corners", corners, frame);
 
 		auto key = waitKey(1);
 		if (key == 'q' || key == 'Q')
@@ -84,13 +87,72 @@ void test_video()
 	std::cout << "***************** Average Time: " << avg_time / count << "ms *****************" << std::endl;
 }
 
+
+void test_video_2()
+{
+	VideoCapture capture_left, capture_right;
+	capture_left.open("../../video20200120/WIN_20200120_11_37_50_Pro.mp4");
+	capture_right.open("../../video20200120/WIN_20200120_11_39_46_Pro.mp4");
+	if (!capture_left.isOpened() || !capture_right.isOpened())
+	{
+		printf("can not open ...\n");
+		return;
+	}
+
+	cv::Size size(1920, 1080);
+	auto detector_left = std::make_unique<Detector>(size);
+	auto detector_right = std::make_unique<Detector>(size);
+
+	cv::namedWindow("left", WINDOW_NORMAL);
+	cv::namedWindow("right", WINDOW_NORMAL);
+
+	Mat frame_left, frame_right;
+
+	auto avg_time = 0.0;
+	auto count = 0;
+	auto total = tic();
+	while (true)
+	{
+		if (!capture_left.read(frame_left) || !capture_right.read(frame_right))
+			break;
+
+		auto tt = tic();
+#ifdef USE_MULTI_THREAD
+		auto fut_left = std::async(std::launch::async, [&]() { return detector_left->process(frame_left); });
+		auto fut_right = std::async(std::launch::async, [&]() { return detector_right->process(frame_right); });
+		auto corners_left = fut_left.get();
+		auto corners_right = fut_right.get();
+#else
+		auto corners_left = detector_left->process(frame_left);
+		auto corners_right = detector_right->process(frame_right);
+#endif // USE_MULTI_THREAD
+		avg_time += toc(tt, "tt");
+		++count;
+
+		detector_left->showResult("left", corners_left, frame_left);
+		detector_right->showResult("right", corners_right, frame_right);
+
+		auto key = waitKey(1);
+		if (key == 'q' || key == 'Q')
+			break;
+	}
+	auto total_ = toc(total, "total");
+
+	capture_left.release();
+	capture_right.release();
+
+	std::cout << "***************** Total Average Time: " << total_ / count << "s *****************" << std::endl;
+	std::cout << "***************** Algorithm Average Time: " << avg_time / count << "ms *****************" << std::endl;
+}
+
+
 int main()
 {
 	////////////////
 	//cv::cuda::printCudaDeviceInfo(cv::cuda::getDevice());
 	////////////////
 
-	test_video();
+	test_video_2();
 	waitKey(0);
 	return 0;
 }

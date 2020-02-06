@@ -8,7 +8,7 @@ public:
     Detector(const cv::Size& size);
 
     Corners process(const cv::Mat& image);
-    void showResult(const Corners& corners, const cv::Mat& image);
+    void showResult(const cv::String& window_name, const Corners& corners, const cv::Mat& image);
 
 private:
     /* detect in one image */
