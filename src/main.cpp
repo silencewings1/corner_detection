@@ -57,16 +57,21 @@ void test_video()
 	if (!capture.isOpened())
 	{
 		printf("can not open ...\n");
-		return ;
+		return;
 	}
 
+	auto avg_time = 0.0;
+	auto count = 0;
 	Mat frame;
 	while (capture.read(frame))
 	{
-		Detector detector(frame.size());
+		static Detector detector(frame.size());
+
 		auto total = tic();
 		auto corners = detector.process(frame);
-		toc(total, "total");
+		avg_time += toc(total, "total");
+		++count;
+
 		detector.showResult(corners, frame);
 
 		auto key = waitKey(1);
@@ -75,6 +80,8 @@ void test_video()
 	}
 
 	capture.release();
+
+	std::cout << "***************** Average Time: " << avg_time / count << "*****************" << std::endl;
 }
 
 int main()
@@ -84,5 +91,6 @@ int main()
 	////////////////
 
 	test_video();
+	waitKey(0);
 	return 0;
 }

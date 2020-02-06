@@ -35,13 +35,16 @@ Detector::Detector(const cv::Size& size)
 
 Corners Detector::process(const cv::Mat& image)
 {
-	auto image_roi = image(rect.range_y, rect.range_x);
+	auto image_roi = image(rect.range_y, rect.range_x).clone();
 
 	//cv::imshow("image_roi", image_roi);
 	auto [corners, is_vaild] = detectCorners(image_roi);
 
 	if (is_vaild)
 	{
+		for (auto& corner : corners)
+			corner.point += Corner(rect.range_x.start, rect.range_y.start);
+
 		PixelType width_sum = 0;
 		Corner point_sum(0, 0);
 		for (const auto& corner : corners)
@@ -56,10 +59,10 @@ Corners Detector::process(const cv::Mat& image)
 		auto rect_side = round(width_avg * 20);
 		rect.range_x = cv::Range(
 			std::max(int(px_avg - rect_side / 2), 0),
-			std::min(int(px_avg + rect_side / 2), image.cols) + 1);
+			std::min(int(px_avg + rect_side / 2), image.cols));
 		rect.range_y = cv::Range(
 			std::max(int(py_avg - rect_side / 2), 0),
-			std::min(int(py_avg + rect_side / 2), image.rows) + 1);
+			std::min(int(py_avg + rect_side / 2), image.rows));
 	}
 
 	Corners res;
@@ -388,9 +391,10 @@ Corner Detector::subPixelLocation(const cv::Point& point)
 		return Corner(point.x, point.y);
 	}
 
+	auto width = cmax.cols, height = cmax.rows;
 	auto patch = cmax(
-		cv::Range(point.y - HALF_PATCH_SIZE, point.y + HALF_PATCH_SIZE + 1),
-		cv::Range(point.x - HALF_PATCH_SIZE, point.x + HALF_PATCH_SIZE + 1));
+		cv::Range(std::max(point.y - HALF_PATCH_SIZE, 0), std::min(point.y + HALF_PATCH_SIZE + 1, height)),
+		cv::Range(std::max(point.x - HALF_PATCH_SIZE, 0), std::min(point.x + HALF_PATCH_SIZE + 1, width)));
 	Eigen::MatrixXf e_patch;
 	cv::cv2eigen(patch, e_patch);
 	Eigen::Map<Eigen::RowVectorXf> v_patch(e_patch.data(), e_patch.size());
@@ -414,8 +418,8 @@ std::tuple<PixelType, PixelType> Detector::findEdgeAngles(const Corner& point)
 	auto width = I_angle.cols, height = I_angle.rows;
 
 	int cu = round(point.x), cv = round(point.y);
-	auto u_range = cv::Range(std::max(cv - r, 0), std::min(cv + r, height) + 1);
-	auto v_range = cv::Range(std::max(cu - r, 0), std::min(cu + r, width) + 1);
+	auto u_range = cv::Range(std::max(cv - r, 0), std::min(cv + r, height));
+	auto v_range = cv::Range(std::max(cu - r, 0), std::min(cu + r, width));
 
 	return edgeOrientation(I_angle(u_range, v_range), I_weight(u_range, v_range));
 }
@@ -601,11 +605,9 @@ Corner Detector::findNextCorner(const CornerTemplate& current, int dir)
 
 	auto side = (int)round(std::max(current.width / 3.0, WIDTH_MIN / 2.0));
 
-	auto range1 = cv::Range(std::max(predict_y - side, 0), std::min(predict_y + side, height) + 1);
-	auto range2 = cv::Range(std::max(predict_x - side, 0), std::min(predict_x + side, width) + 1);
 	auto cmax_sub = cmax(
-		cv::Range(std::max(predict_y - side, 0), std::min(predict_y + side, height) + 1),
-		cv::Range(std::max(predict_x - side, 0), std::min(predict_x + side, width) + 1));
+		cv::Range(std::max(predict_y - side, 0), std::min(predict_y + side, height)),
+		cv::Range(std::max(predict_x - side, 0), std::min(predict_x + side, width)));
 
 	cv::Point max_pos;
 	cv::minMaxLoc(cmax_sub, nullptr, nullptr, nullptr, &max_pos);
