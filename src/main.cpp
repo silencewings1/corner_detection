@@ -53,7 +53,7 @@ void test_image()
 void test_video()
 {
 	VideoCapture capture;
-	capture.open("../../video20200120/WIN_20200120_11_39_46_Pro.mp4");
+	capture.open("../../video20200120/WIN_20200120_11_37_50_Pro.mp4");
 	if (!capture.isOpened())
 	{
 		printf("can not open ...\n");
