@@ -3,7 +3,7 @@
         {
             "type": "shell",
             "label": "cmake build",
-            "command": "cmake .. & make",
+            "command": "cmake .. & make -j8",
             "options": {
                 "cwd": "${workspaceFolder}/build/"
             }

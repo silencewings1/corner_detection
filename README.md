@@ -1,7 +1,7 @@
 # Corner Detection
 
 ## dependency
-`opencv4.2`, `eigen3.7` 
+`opencv4.2`, `eigen3.3`, `ceres2.0`
  `cuda10.1` is **optional** build with `opencv-contrib`
 
 ## build && run
@@ -23,7 +23,7 @@ config image/video dir in `main.cpp`
   ```
 * Visual Studio 2019
   * open `vsproj/cornerDetection.vcxproj`  
-  * configure your dir for `opencv` and `eigen`
+  * configure your dir for `opencv`, `eigen` and `ceres`
 
 
 ## setting for vscode
