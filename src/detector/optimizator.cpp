@@ -1,6 +1,6 @@
 #include "optimizator.h"
 #include "../config/config.h"
-#include "alg/rotation.h"
+#include "../alg/rotation.h"
 #include <Eigen/Dense>
 #include <algorithm>
 #include <ceres/ceres.h>
