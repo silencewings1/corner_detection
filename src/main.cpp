@@ -385,6 +385,8 @@ void test_whole()
     auto bad_count = 0;
     for (int id = 1; id <= 16; ++id)
     {
+        std::cout << "id: " << id << std::endl;
+
         String name_left = "../../imgs_1g3p_4_line_60mm/left/left_" + to_string(id) + "_rectified.png";
         String name_right = "../../imgs_1g3p_4_line_60mm/right/right_" + to_string(id) + "_rectified.png";
         // String name_left = "../../imgs_1g3p_4_line_60mm/left/left_" + to_string(id) + ".png";

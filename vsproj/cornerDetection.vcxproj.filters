@@ -10,6 +10,9 @@
     <Filter Include="def">
       <UniqueIdentifier>{18ef0cf3-def2-4480-bc31-b2dab61f59e4}</UniqueIdentifier>
     </Filter>
+    <Filter Include="config">
+      <UniqueIdentifier>{e336ecd7-69c2-4415-96ad-75312c4fe610}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\src\main.cpp" />
@@ -18,6 +21,12 @@
     </ClCompile>
     <ClCompile Include="..\src\alg\math_helper.cpp">
       <Filter>alg</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\config\config.cpp">
+      <Filter>config</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\detector\optimizator.cpp">
+      <Filter>detector</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -44,6 +53,12 @@
     </ClInclude>
     <ClInclude Include="..\src\def\macro_def.h">
       <Filter>def</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\config\config.h">
+      <Filter>config</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\alg\rotation.h">
+      <Filter>alg</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
