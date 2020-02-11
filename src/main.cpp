@@ -31,7 +31,18 @@ void test_refy()
     imwrite("../../img_res/left_after.png", img_after_left);
     imwrite("../../img_res/right_after.png", img_after_right);
 
-    waitKey(0);
+    //////////////////////////////
+    String rect_image_name_left = "../../imgs_1g3p_4_line_60mm/left/left_1_rectified.png";
+    Mat rect_image_left = imread(rect_image_name_left);
+    String rect_image_name_right = "../../imgs_1g3p_4_line_60mm/right/right_1_rectified.png";
+    Mat rect_image_right = imread(rect_image_name_right);
+
+    cv::Mat left_sub;
+
+    imshow("left sub", img_after_left - rect_image_left);
+    imshow("right sub", img_after_right - rect_image_right);
+
+    //waitKey(0);
 }
 
 void test_image()
@@ -56,31 +67,45 @@ void test_image()
 void test_video_2()
 {
     VideoCapture capture_left, capture_right;
-    capture_right.open("../../video20200120/WIN_20200120_11_37_50_Pro.mp4");
-    capture_left.open("../../video20200120/WIN_20200120_11_39_46_Pro.mp4");
+    // capture_right.open("../../video20200120/WIN_20200120_11_37_50_Pro.mp4");
+    // capture_left.open("../../video20200120/WIN_20200120_11_39_46_Pro.mp4");
+    capture_right.open(0);
+    capture_left.open(2);
+
+    cv::Size size(1920, 1080);
+    capture_left.set(CAP_PROP_FRAME_WIDTH, size.width);
+    capture_left.set(CAP_PROP_FRAME_HEIGHT, size.height);
+    capture_right.set(CAP_PROP_FRAME_WIDTH, size.width);
+    capture_right.set(CAP_PROP_FRAME_HEIGHT, size.height);
+
     if (!capture_left.isOpened() || !capture_right.isOpened())
     {
         printf("can not open ...\n");
         return;
     }
 
-    cv::Size size(1920, 1080);
     auto detector_left = std::make_unique<Detector>(size);
     auto detector_right = std::make_unique<Detector>(size);
     Optimizator optimizator;
+    Rectifier rectifier(size);
 
     cv::namedWindow("left", WINDOW_NORMAL);
     cv::namedWindow("right", WINDOW_NORMAL);
 
     Mat frame_left, frame_right;
 
-    auto avg_time = 0.0;
-    auto count = 0, bad_count = 0;
+    auto rectify_avg_time = 0.0, detect_avg_time = 0.0, bad_avg_time = 0.0, good_avg_time = 0.0;
+    auto count = 0, bad_count = 0, good_count = 0;
     auto total = tic();
     while (true)
     {
         if (!capture_left.read(frame_left) || !capture_right.read(frame_right))
             break;
+
+        auto tr = tic();
+        frame_left = rectifier.rectify(frame_left, Rectifier::LEFT);
+        frame_right = rectifier.rectify(frame_right, Rectifier::RIGHT);
+        rectify_avg_time += toc(tr, "tr");
 
         auto tt = tic();
 #ifdef USE_MULTI_THREAD
@@ -92,19 +117,28 @@ void test_video_2()
         auto corners_left = detector_left->process(frame_left);
         auto corners_right = detector_right->process(frame_right);
 #endif // USE_MULTI_THREAD
-        avg_time += toc(tt, "tt");
+        detect_avg_time += toc(tt, "tt");
         ++count;
 
         detector_left->showResult("left", corners_left, frame_left);
         detector_right->showResult("right", corners_right, frame_right);
 
-        auto opti = tic();
-        auto [t, cost] = optimizator.process(corners_left, corners_right);
-        avg_time += toc(opti, "opti");
-        if (cost >= OPTI_COST_THRESHOLD)
+        if (!corners_left.empty() && !corners_right.empty())
         {
-            std::cout << "bad at: " << count << std::endl;
-            ++bad_count;
+            auto opti = tic();
+            auto [t, cost] = optimizator.process(corners_left, corners_right);
+            auto duration = toc(opti, "opti");
+            if (cost >= OPTI_COST_THRESHOLD)
+            {
+                std::cout << "bad at: " << count << std::endl;
+                bad_avg_time += duration;
+                ++bad_count;
+            }
+            else
+            {
+                good_avg_time += duration;
+                ++good_count;
+            }
         }
 
         auto key = waitKey(1);
@@ -117,8 +151,10 @@ void test_video_2()
     capture_right.release();
 
     std::cout << "***************** Total Average Time: " << total_ / count << "s *****************" << std::endl;
-    std::cout << "***************** Algorithm Average Time: " << avg_time / count << "s *****************" << std::endl;
-    std::cout << "***************** Bad Count: " << bad_count << ", " << 100.0 * bad_count / count << "% *****************" << std::endl;
+    std::cout << "***************** Rectify Average Time: " << rectify_avg_time / count << "s *****************" << std::endl;
+    std::cout << "***************** Detection Average Time: " << detect_avg_time / count << "s *****************" << std::endl;
+    std::cout << "***************** Bad Average Time: " << bad_avg_time / bad_count << ", " << 100.0 * bad_count / (bad_count + good_count) << "% *****************" << std::endl;
+    std::cout << "***************** Good Average Time: " << good_avg_time / good_count << ", " << 100.0 * good_count / (bad_count + good_count) << "% *****************" << std::endl;
 }
 
 void test_opti()
@@ -336,6 +372,7 @@ void test_whole()
     cv::Size size(1920, 1080);
     auto detector_left = std::make_unique<Detector>(size);
     auto detector_right = std::make_unique<Detector>(size);
+    Rectifier rectifier(size);
     // cv::namedWindow("left", WINDOW_NORMAL);
     // cv::namedWindow("right", WINDOW_NORMAL);
 
@@ -350,6 +387,8 @@ void test_whole()
     {
         String name_left = "../../imgs_1g3p_4_line_60mm/left/left_" + to_string(id) + "_rectified.png";
         String name_right = "../../imgs_1g3p_4_line_60mm/right/right_" + to_string(id) + "_rectified.png";
+        // String name_left = "../../imgs_1g3p_4_line_60mm/left/left_" + to_string(id) + ".png";
+        // String name_right = "../../imgs_1g3p_4_line_60mm/right/right_" + to_string(id) + ".png";
         Mat image_left = imread(name_left);
         Mat image_right = imread(name_right);
         if (!image_left.data || !image_right.data)
@@ -357,6 +396,9 @@ void test_whole()
             printf(" No image data \n ");
             return;
         }
+
+        // image_left = rectifier.rectify(image_left, Rectifier::LEFT);
+        // image_right = rectifier.rectify(image_right, Rectifier::RIGHT);
 
         auto fut_left = std::async(std::launch::async, [&]() { return detector_left->process(image_left); });
         auto fut_right = std::async(std::launch::async, [&]() { return detector_right->process(image_right); });
@@ -403,8 +445,9 @@ int main()
     if (!loadConfig())
         return -1;
 
+    // test_refy();
     test_whole();
-    //test_video_2();
+    // test_video_2();
     waitKey(0);
     return 0;
 }
